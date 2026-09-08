@@ -70,8 +70,6 @@ your radar as an ore vein.
   resolves no mouse focus, so no tooltip appears and no node can be confirmed.
   Rather than clearing the display, the radar freezes what it last confirmed until
   you let go.
-- **No scanning in combat.** The minimap and the mouse focus are not taken away mid
-  fight; the radar holds its last state and resumes afterwards.
 - **Only nodes the database knows about.** A spawn point missing from GatherMate2's
   data is never aimed at and therefore never confirmed.
 - **The minimap blinks.** Confirming a node means putting the minimap under your

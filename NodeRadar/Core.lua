@@ -13,6 +13,13 @@ local BURST = 30
 -- distance. Candidates this close therefore share a single sample point, and the
 -- tooltip's lines say which of them are actually there.
 local CLUSTER_PX = 4
+-- A blip's hit area is far wider than the cluster spacing, so a sample can pick up the
+-- tooltip of a node that belongs somewhere else entirely. A confirmation is therefore
+-- attributed to the candidate of that exact node id nearest the sample point, within
+-- this radius, rather than to whatever sat in the cluster being probed.
+local MATCH_PX = 8
+-- standing on a node puts its icon under the player marker, where it says nothing
+local MIN_DISTANCE = 5
 -- an unconfirmed cluster is probed around its aimed point as well, in case another
 -- blip covers it
 local PROBE = {
@@ -20,15 +27,62 @@ local PROBE = {
 	{ 5, 0, "east" }, { -5, 0, "west" },
 	{ 0, 5, "north" }, { 0, -5, "south" },
 }
+-- Debug mode places these in world coordinates around wherever you stood when you
+-- switched it on, using real node types so they travel, rotate and colour exactly
+-- like a confirmed node. Offsets are yards, the pairs are GatherMate's db type and
+-- node id, chosen to span the skill range.
+local TEST_NODES = {
+	{ 25, 0, "Mining", 201 },
+	{ -25, 0, "Herb Gathering", 401 },
+	{ 0, 55, "Mining", 221 },
+	{ 0, -55, "Herb Gathering", 432 },
+	{ 60, 55, "Mining", 224 },
+	{ -60, 45, "Herb Gathering", 437 },
+}
+
+-- Skill needed to gather a node, keyed by GatherMate's node ids. Values are taken
+-- from the Icy Veins and Warcraft Tavern TBC profession guides, which agree on every
+-- entry; ooze covered variants carry their base ore's requirement. Nodes whose
+-- requirement could not be verified are deliberately absent - a missing entry means
+-- no judgement is made rather than a guessed one.
+local REQUIRED_SKILL = {
+	["Mining"] = {
+		[201] = 1, [202] = 65, [203] = 125, [204] = 75, [205] = 155,
+		[206] = 175, [207] = 175, [208] = 230, [209] = 75, [210] = 155,
+		[211] = 230, [212] = 275, [213] = 245, [214] = 245, [215] = 275,
+		[217] = 230, [221] = 300, [222] = 325, [223] = 350, [224] = 375,
+	},
+	["Herb Gathering"] = {
+		[401] = 1, [402] = 1, [403] = 1, [404] = 70, [405] = 70,
+		[407] = 85, [408] = 115, [409] = 115, [410] = 120, [411] = 125,
+		[412] = 150, [413] = 170, [414] = 170, [415] = 185, [416] = 195,
+		[417] = 205, [418] = 205, [420] = 220, [421] = 230, [422] = 235,
+		[423] = 245, [424] = 270, [425] = 250, [426] = 270, [427] = 270,
+		[428] = 270, [429] = 290, [431] = 300, [432] = 300, [433] = 315,
+		[434] = 325, [435] = 340, [437] = 375, [438] = 350, [439] = 365,
+		[440] = 325, [441] = 335,
+	},
+}
+
+-- the tracking abilities whose blips this addon can read; GatherMate matches them by
+-- name on some clients and by texture on others, so both are compared
+local TRACKING_SPELLS = { [2580] = "Mining", [2383] = "Herb Gathering" }
 
 local defaults = {
 	radius = 120,
-	iconSize = 16,
-	scanInterval = 3,
+	iconSize = 20,
+	nodeAlpha = 1,
+	gridAlpha = 0.25,
+	scanInterval = 5,
+	colorBySkill = true,
+	showSparkle = true,
 	showDistances = true,
 	showGrid = true,
 	showWindow = true,
 	autoStart = false,
+	pauseInCombat = false,
+	debugLog = false,
+	debugTestNodes = false,
 	windowPoint = { "CENTER", "CENTER", 0, 220 },
 }
 NR.defaults = defaults
@@ -39,14 +93,22 @@ local zoneID, playerX, playerY
 local mapRadius, halfWidth, halfHeight
 local rotateMinimap, scanRange
 local sinceScan, sinceRebuild = 0, 0
+local wasBlocked = false
 -- hits age on this clock, which only advances while scanning is actually possible:
 -- a held mouse button means "cannot look", never "the node is gone"
 local scanClock = 0
 local running = false
+local trackingWarned = false
+local shownCount = 0
+local skillRank = {}
 local db
 
 local function out(msg)
 	print("|cff33ff99NodeRadar|r " .. msg)
+end
+
+local function stamped(msg)
+	out("|cff888888[" .. date("%H:%M:%S") .. "]|r " .. msg)
 end
 
 local function rotate(x, y, facing)
@@ -119,6 +181,29 @@ local function textureFor(dbType, nodeID)
 	return GatherMate.nodeTextures[dbType][nodeID] or "Interface\\Icons\\INV_Misc_QuestionMark"
 end
 
+-- The skill list only reports expanded headers, so a collapsed profession header
+-- leaves the rank unknown. That is handled by making no judgement at all rather
+-- than assuming the worst.
+local function refreshSkills()
+	wipe(skillRank)
+	local locale = LibStub and LibStub("AceLocale-3.0", true)
+	local L = locale and locale:GetLocale("GatherMate2", true)
+	if not L then return end
+
+	local professions = { [L["Mining"]] = "Mining", [L["Herbalism"]] = "Herb Gathering" }
+	for index = 1, GetNumSkillLines() do
+		local name, header, _, rank = GetSkillLineInfo(index)
+		local dbType = name and not header and professions[name]
+		if dbType then skillRank[dbType] = rank end
+	end
+end
+
+local function skillTooLow(dbType, nodeID)
+	local required = REQUIRED_SKILL[dbType] and REQUIRED_SKILL[dbType][nodeID]
+	local rank = skillRank[dbType]
+	return required ~= nil and rank ~= nil and rank < required
+end
+
 local function rebuildCandidates()
 	local zx, zy = HBD:GetZoneCoordinatesFromWorld(playerX, playerY, zoneID)
 	if not zx then return end
@@ -149,8 +234,8 @@ end
 local diag = { ringHits = {}, samples = 0, tooltips = 0, matched = 0, log = {} }
 
 local function logTooltip(matched, ring, text)
-	local entry = string.format("%s | %s",
-		matched and "MATCH" or "NOMATCH", (text:gsub("\n", " / ")))
+	local entry = string.format("%s owner=%s | %s",
+		matched and "MATCH" or "NOMATCH", Scanner:LastOwner(), (text:gsub("\n", " / ")))
 	-- distinct texts only: one node hit fifty times would otherwise crowd out every
 	-- other blip the scan saw
 	for _, existing in ipairs(diag.log) do
@@ -178,26 +263,36 @@ function Scanner.onSample(tag, text, ox, oy, ring)
 	if ring then diag.ringHits[ring] = (diag.ringHits[ring] or 0) + 1 end
 
 	-- one sample can prove several nodes at once, so each node named in the tooltip
-	-- claims the cluster member it fits best
+	-- claims the candidate it belongs to
 	wipe(taken)
 	for _, entry in ipairs(found) do
-		local chosen
-		for _, key in ipairs(cluster.members) do
-			local node = nodes[key]
-			if node and not taken[key] and node.dbType == entry.dbType then
-				chosen = chosen or key
-				if node.nodeID == entry.nodeID then
-					chosen = key
-					break
+		local chosen, closest
+		for key, node in pairs(nodes) do
+			if node.ox and not taken[key]
+				and node.dbType == entry.dbType and node.nodeID == entry.nodeID then
+				local dx, dy = node.ox - ox, node.oy - oy
+				local distance = dx * dx + dy * dy
+				if distance <= MATCH_PX * MATCH_PX and (not closest or distance < closest) then
+					chosen, closest = key, distance
 				end
 			end
 		end
+
+		-- nothing of that id nearby: only an unambiguous cluster may take it, which is
+		-- how a spot the database calls copper gets shown as the tin that spawned there
+		if not chosen and #cluster.members == 1 and not taken[cluster.members[1]] then
+			chosen = cluster.members[1]
+		end
+
 		if chosen then
 			taken[chosen] = true
 			local node = nodes[chosen]
 			node.nodeID = entry.nodeID
+			local previous = hits[chosen]
 			hits[chosen] = { wx = node.wx, wy = node.wy, seenAt = scanClock,
-				texture = textureFor(entry.dbType, entry.nodeID) }
+				texture = textureFor(entry.dbType, entry.nodeID),
+				tooLow = skillTooLow(entry.dbType, entry.nodeID),
+				appearedAt = previous and previous.appearedAt or GetTime() }
 		end
 	end
 end
@@ -210,6 +305,7 @@ local function buildClusters()
 	for key, node in pairs(nodes) do
 		local ox, oy = minimapOffset(playerX - node.wx, playerY - node.wy)
 		if ox then
+			node.ox, node.oy = ox, oy
 			local target
 			for _, cluster in ipairs(clusters) do
 				local dx, dy = cluster.ox - ox, cluster.oy - oy
@@ -259,6 +355,15 @@ local function queueScan()
 		end
 	end
 
+	if db.debugLog then
+		local confirmed = 0
+		for _, cluster in ipairs(clusters) do
+			if cluster.confirmed then confirmed = confirmed + 1 end
+		end
+		stamped(string.format("scan: %d clusters (%d confirmed), %d samples queued, %d shown",
+			#clusters, confirmed, #pending, shownCount))
+	end
+
 	Scanner:Submit(pending)
 end
 
@@ -269,22 +374,26 @@ local function render()
 	local ttl = db.scanInterval + 1.5
 	wipe(entries)
 	for key, hit in pairs(hits) do
-		if scanClock - hit.seenAt > ttl then
+		if not hit.test and scanClock - hit.seenAt > ttl then
 			hits[key] = nil
 		else
 			local xDist, yDist = playerX - hit.wx, playerY - hit.wy
 			local distance = math.sqrt(xDist * xDist + yDist * yDist)
-			if distance <= scanRange then
+			if distance <= scanRange and distance >= MIN_DISTANCE then
 				local rx, ry = rotate(xDist, yDist, facing)
 				entries[#entries + 1] = {
+					key = key,
 					rx = rx / scanRange,
 					ry = -ry / scanRange,
 					distance = distance,
 					texture = hit.texture,
+					tooLow = hit.tooLow,
+					appearedAt = hit.appearedAt,
 				}
 			end
 		end
 	end
+	shownCount = #entries
 	Radar:Render(entries)
 end
 
@@ -311,18 +420,96 @@ driver:SetScript("OnUpdate", function(_, elapsed)
 		return
 	end
 
-	if not Scanner:IsBlocked() then
+	local isBlocked, reason = Scanner:IsBlocked()
+	if not isBlocked then
 		scanClock = scanClock + elapsed
+		if wasBlocked and db.debugLog then stamped("scanning resumed") end
+	elseif not wasBlocked and db.debugLog then
+		stamped("scanning paused: " .. tostring(reason))
 	end
+	wasBlocked = isBlocked
 
+	-- The interval keeps running through a pause, so the time already waited is not
+	-- lost and a pass starts the moment scanning becomes possible again - but only if
+	-- the pause outlasted whatever was left of the interval.
 	sinceScan = sinceScan + elapsed
-	if sinceScan >= db.scanInterval and not Scanner:IsBusy() then
+	if sinceScan >= db.scanInterval and not isBlocked and not Scanner:IsBusy() then
 		sinceScan = 0
 		queueScan()
 	end
 
 	render()
 end)
+
+-- Nothing can be confirmed without a gathering tracking active: the client draws no
+-- blips, so there is nothing to hover. Returns nil when none is active, and true when
+-- the client offers no way to tell - in which case no warning is given.
+local function gatherTrackingActive()
+	local api = C_Minimap
+	if not (api and api.GetNumTrackingTypes and api.GetTrackingInfo) then return true end
+
+	local wanted = {}
+	for spellID, dbType in pairs(TRACKING_SPELLS) do
+		local name, _, texture = GetSpellInfo(spellID)
+		if name then wanted[name] = dbType end
+		if texture then wanted[texture] = dbType end
+	end
+
+	for index = 1, api.GetNumTrackingTypes() do
+		local first, second, third = api.GetTrackingInfo(index)
+		local name, texture, active
+		if type(first) == "table" then
+			name, texture, active = first.name, first.texture, first.active
+		else
+			name, texture, active = first, second, third
+		end
+		if active and (wanted[name] or wanted[texture]) then return name end
+	end
+end
+
+local function warnMissingTracking()
+	out("|cffffaa00no gathering tracking is active - turn on Find Minerals or Find "
+		.. "Herbs, otherwise the client draws no blips and nothing can be confirmed|r")
+end
+
+-- called on every tracking change, so it only speaks when the state actually flips
+local function checkTracking()
+	if not running then return end
+	if gatherTrackingActive() then
+		if trackingWarned then
+			trackingWarned = false
+			out("gathering tracking is active again")
+		end
+	elseif not trackingWarned then
+		trackingWarned = true
+		warnMissingTracking()
+	end
+end
+
+-- test nodes are ordinary hits that never expire, so every step of the display -
+-- world position, rotation, distance, skill colour - is exercised
+function NR.SetTestNodes(enabled)
+	for key, hit in pairs(hits) do
+		if hit.test then hits[key] = nil end
+	end
+	if not enabled then return end
+
+	local px, py = HBD:GetPlayerWorldPosition()
+	if not px then
+		out("|cffffaa00no world position available, test nodes not placed|r")
+		return
+	end
+
+	for index, test in ipairs(TEST_NODES) do
+		hits["test:" .. index] = {
+			wx = px + test[1], wy = py + test[2], test = true, seenAt = 0,
+			appearedAt = GetTime(),
+			texture = textureFor(test[3], test[4]),
+			tooLow = skillTooLow(test[3], test[4]),
+		}
+	end
+	out(#TEST_NODES .. " test nodes placed around you")
+end
 
 function NR.Stop()
 	running = false
@@ -337,10 +524,13 @@ function NR.Stop()
 end
 
 function NR.Start()
+	trackingWarned = not gatherTrackingActive()
+	if trackingWarned then warnMissingTracking() end
 	running = true
 	sinceScan, sinceRebuild = 0, 0.25
 	Radar:SetShown(true)
 	driver:Show()
+	if db.debugTestNodes then NR.SetTestNodes(true) end
 	NR.Options:Refresh()
 end
 
@@ -362,6 +552,12 @@ local function initialize()
 	if initialized then return true end
 
 	NodeRadarDB = NodeRadarDB or {}
+	-- the single debug switch became two
+	if NodeRadarDB.debugMode ~= nil then
+		NodeRadarDB.debugLog = NodeRadarDB.debugMode
+		NodeRadarDB.debugTestNodes = NodeRadarDB.debugMode
+		NodeRadarDB.debugMode = nil
+	end
 	applyDefaults(NodeRadarDB, defaults)
 	db = NodeRadarDB
 
@@ -379,6 +575,8 @@ local function initialize()
 	Radar:Init(db)
 	NR.Options:Init(db)
 	initialized = true
+	Scanner.pauseInCombat = db.pauseInCombat
+	refreshSkills()
 
 	out("ready. /nr starts and stops the radar")
 	if not Scanner.canSplitMouse then
@@ -395,7 +593,16 @@ end
 
 local loader = CreateFrame("Frame")
 loader:RegisterEvent("PLAYER_LOGIN")
-loader:SetScript("OnEvent", function()
+loader:RegisterEvent("SKILL_LINES_CHANGED")
+loader:RegisterEvent("MINIMAP_UPDATE_TRACKING")
+loader:SetScript("OnEvent", function(_, event)
+	if event == "SKILL_LINES_CHANGED" then
+		if initialized then refreshSkills() end
+		return
+	elseif event == "MINIMAP_UPDATE_TRACKING" then
+		if initialized then checkTracking() end
+		return
+	end
 	if initialize() and db.autoStart then NR.Start() end
 end)
 
@@ -439,6 +646,7 @@ local function writeDiagnostics()
 		pixelsPerYard = halfWidth and mapRadius and halfWidth / mapRadius,
 		rotateMinimap = rotateMinimap,
 		shownNodes = shown,
+		skillRank = { mining = skillRank["Mining"], herbalism = skillRank["Herb Gathering"] },
 		candidates = candidates,
 		clusterSizes = clusterSizes,
 		confirmed = confirmed,

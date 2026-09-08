@@ -19,6 +19,7 @@ driver:Hide()
 Scanner.canSplitMouse = type(Minimap.SetMouseClickEnabled) == "function"
 	and type(Minimap.SetMouseMotionEnabled) == "function"
 Scanner.canHideBlips = type(Minimap.SetBlipTexture) == "function"
+Scanner.pauseInCombat = false
 Scanner.canHideArrow = type(Minimap.SetPlayerTexture) == "function"
 
 -- The client resets the tooltip's alpha when it shows it, so hiding it once is not
@@ -31,6 +32,14 @@ end)
 -- client's next internal blip update, which shows up as a one-frame flash
 local function refreshBlips()
 	if Minimap.UpdateBlips then Minimap:UpdateBlips() end
+end
+
+-- GatherMate re-enables the mouse on its pins on every minimap update, so switching
+-- it off for the duration of a pass does not hold. The tooltip's owner does: the
+-- client owns a blip tooltip through the minimap, an addon pin owns its own.
+local function ownerIsMinimap()
+	local owner = GameTooltip:GetOwner()
+	return owner == nil or owner == Minimap or owner == UIParent
 end
 
 -- a real tracking blip is drawn by the client on the minimap itself, so anything
@@ -51,7 +60,7 @@ end
 -- a node can sit below a vendor or another blip
 local function tooltipText()
 	if not GameTooltip:IsShown() then return nil end
-	if not focusIsMinimap() then return nil end
+	if not ownerIsMinimap() or not focusIsMinimap() then return nil end
 
 	local lines
 	for index = 1, GameTooltip:NumLines() do
@@ -147,15 +156,38 @@ local function release()
 end
 
 -- Measured: during mouselook the client resolves no mouse focus at all - 22 samples
--- produced 0 tooltips against a 24% baseline. Scanning is impossible while a button is
--- held, and the caller pauses hit expiry for exactly that reason.
--- Combat is a deliberate choice rather than a technical limit: taking the minimap and
--- the mouse focus away mid fight is worse than a stale radar.
+-- produced 0 tooltips against a 24% baseline. So mouselook, not the button state, is
+-- what makes scanning impossible.
+-- Attacking a target is a right click, which enters mouselook for a moment as well;
+-- only holding it past this grace counts as turning the camera.
+local CLICK_GRACE = 0.25
+local mouselookSince
+
+-- Combat is a setting rather than a technical limit: scanning works in a fight, it
+-- just takes the minimap and the mouse focus while it runs.
 local function blocked()
-	return IsMouseButtonDown()
-		or UnitAffectingCombat("player")
-		or SpellIsTargeting()
-		or not Minimap:IsVisible()
+	if IsMouselooking and IsMouselooking() then
+		mouselookSince = mouselookSince or GetTime()
+	else
+		mouselookSince = nil
+	end
+
+	if UnitIsDeadOrGhost("player") then
+		return true, "dead"
+	end
+	if mouselookSince and GetTime() - mouselookSince > CLICK_GRACE then
+		return true, "turning the camera"
+	end
+	if Scanner.pauseInCombat and UnitAffectingCombat("player") then
+		return true, "in combat"
+	end
+	if SpellIsTargeting() then
+		return true, "a spell is waiting for a target"
+	end
+	if not Minimap:IsVisible() then
+		return true, "the minimap is hidden"
+	end
+	return false
 end
 
 driver:SetScript("OnUpdate", function()
@@ -199,10 +231,19 @@ driver:SetScript("OnUpdate", function()
 	pending = { x = x, y = y, tag = point.tag, ring = point.ring }
 end)
 
+-- diagnostics: which frame produced the tooltip that was just read
+function Scanner:LastOwner()
+	local owner = GameTooltip:GetOwner()
+	if not owner then return "none" end
+	if owner == Minimap then return "Minimap" end
+	return owner:GetName() or "unnamed frame"
+end
+
 function Scanner:IsBusy()
 	return driver:IsShown()
 end
 
+-- returns whether scanning is impossible right now, and why
 function Scanner:IsBlocked()
 	return blocked()
 end

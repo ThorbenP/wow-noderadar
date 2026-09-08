@@ -23,7 +23,9 @@ GatherMate2 is missing.
 Import once after installing: `/gathermate` → *Import* → tick *Mining* and
 *Herbalism* → *Import GatherMate2Data*.
 
-**An active tracking ability** — *Find Minerals* or *Find Herbs*. The client draws
+**An active tracking ability** — *Find Minerals* or *Find Herbs*. Starting the radar
+without one prints a warning, since the radar would otherwise stay empty for no
+visible reason. The client draws
 minimap blips only for the tracking type that is currently active, and Burning
 Crusade allows exactly one at a time. NodeRadar can only confirm what the client
 is willing to draw.
@@ -62,14 +64,24 @@ shown by default; it can be turned off in the options.
 `/nr options`, the gear on the control window, or
 Esc → Interface → AddOns → NodeRadar.
 
-- Show the control window
-- Show the radar grid — range rings and axes
-- Show distance in yards on each icon
-- Start automatically on login
-- Radar radius, 100–400 px
-- Icon size, 8–40 px
-- Seconds between scans, 0.5–10 s
-- Restore defaults
+**Nodes** — icon size (8–64 px), node opacity (10–100 %), distance in yards on each
+icon, red colouring for nodes your gathering skill cannot reach yet, and a short
+highlight when a node first appears.
+
+**Radar** — radius (100–400 px), grid opacity (5–100 %), and whether the range rings
+and axes are drawn at all.
+
+**Scanning** — seconds between scans (0.5–10 s), and whether scanning pauses while
+you are in combat. Scanning always pauses while you are dead. Pausing is off by default: scanning works in a fight, it just
+takes the minimap and the mouse focus while a pass runs.
+
+**Interface** — the control window, starting automatically on login, and two
+independent debug switches: one logs every scan pass to chat, the other places six
+test nodes around you, anchored in the world so they behave exactly like confirmed
+nodes.
+
+A *Restore defaults* button resets everything except the control window's
+visibility, which is how you reach these settings in the first place.
 
 ## How it works
 
@@ -111,18 +123,20 @@ Everything is restored when the pass ends.
 
 ## Limitations
 
-- **No scanning while you hold the right mouse button.** During mouselook the
-  client resolves no mouse focus at all, so no tooltip appears — measured: 22
-  samples produced 0 tooltips against a 24% baseline. Instead of dropping the
-  display, hit expiry pauses while scanning is impossible, so the radar keeps
-  showing what it last confirmed until you let go.
-- **No scanning in combat.** The minimap and the mouse focus are not taken away
-  mid fight. As with mouselook, the radar holds what it last confirmed instead of
-  clearing, and resumes when the fight ends.
+- **No scanning while you are dead**, or while a spell is waiting for a target.
+- **No scanning while you turn the camera.** During mouselook the client resolves no
+  mouse focus at all, so no tooltip appears — measured: 22 samples produced 0
+  tooltips against a 24% baseline. A right click on a target enters mouselook only
+  briefly and is not counted. Instead of dropping the display, hit expiry pauses
+  while scanning is impossible, so the radar keeps showing what it last confirmed
+  until you let go. The interval keeps running through the pause, so a pass starts
+  the moment scanning is possible again if the pause outlasted what was left of it.
 - **Only nodes the database knows about.** A spawn point missing from
   GatherMate2's data is never aimed at and therefore never confirmed.
 - **One tracking type at a time**, which is a Burning Crusade limitation, not an
   addon one.
+- **A node closer than five yards is not drawn.** You are standing on it; its icon
+  would sit under the player marker and tell you nothing.
 - **A harvested node lingers** for the scan interval plus 1.5 seconds, until the
   missing confirmation lets it expire.
 - **The minimap disappears briefly** during each pass — one frame per sample.

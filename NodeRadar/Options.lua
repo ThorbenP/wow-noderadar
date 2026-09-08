@@ -8,9 +8,9 @@ local window, toggleButton, settings
 
 -- Templates differ between client generations, so labels are built by hand and only
 -- the three oldest, universally present templates are used.
-local function checkbox(parent, label, y, get, set)
+local function checkbox(parent, label, x, y, get, set)
 	local box = CreateFrame("CheckButton", nil, parent, "UICheckButtonTemplate")
-	box:SetPoint("TOPLEFT", 20, y)
+	box:SetPoint("TOPLEFT", x, y)
 	box:SetSize(26, 26)
 
 	local text = box:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
@@ -22,11 +22,11 @@ local function checkbox(parent, label, y, get, set)
 	return box
 end
 
-local function slider(parent, label, minimum, maximum, step, format, y, get, set)
+local function slider(parent, label, minimum, maximum, step, format, x, y, width, get, set)
 	local bar = CreateFrame("Slider", "NodeRadarSlider" .. label:gsub("%W", ""), parent,
 		"OptionsSliderTemplate")
-	bar:SetPoint("TOPLEFT", 24, y)
-	bar:SetWidth(280)
+	bar:SetPoint("TOPLEFT", x, y)
+	bar:SetWidth(width)
 	bar:SetMinMaxValues(minimum, maximum)
 	bar:SetValueStep(step)
 	if bar.SetObeyStepOnDrag then bar:SetObeyStepOnDrag(true) end
@@ -55,9 +55,24 @@ local function slider(parent, label, minimum, maximum, step, format, y, get, set
 	return bar
 end
 
+local function section(parent, label, y, width)
+	local text = parent:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+	text:SetPoint("TOPLEFT", 16, y)
+	text:SetText(label)
+
+	local rule = parent:CreateTexture(nil, "ARTWORK")
+	rule:SetColorTexture(0.6, 0.9, 0.7, 0.25)
+	rule:SetHeight(1)
+	rule:SetPoint("TOPLEFT", text, "BOTTOMLEFT", 0, -3)
+	rule:SetWidth(width)
+end
+
+local LEFT, RIGHT = 20, 240
+local SLIDER_WIDTH = 170
+
 local function buildWindow()
 	settings = CreateFrame("Frame", "NodeRadarSettingsFrame", UIParent)
-	settings:SetSize(400, 440)
+	settings:SetSize(460, 580)
 	settings:SetPoint("CENTER")
 	settings:SetFrameStrata("DIALOG")
 	settings:SetMovable(true)
@@ -85,40 +100,64 @@ local function buildWindow()
 
 	local note = settings:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
 	note:SetPoint("TOPLEFT", 16, -40)
-	note:SetWidth(360)
+	note:SetWidth(420)
 	note:SetJustifyH("LEFT")
 	note:SetText("Shows herb and ore nodes that really exist in minimap range. "
 		.. "Needs the matching tracking ability to be active.")
 
 	local controls = {}
+	local function add(control) controls[#controls + 1] = control end
 
-	controls[#controls + 1] = checkbox(settings, "Show the control window", -76,
-		function() return db.showWindow end,
-		function(value) db.showWindow = value Options:ApplySettings() end)
-
-	controls[#controls + 1] = checkbox(settings, "Show the radar grid", -104,
-		function() return db.showGrid end,
-		function(value) db.showGrid = value NR.Radar:ShowGrid(value) end)
-
-	controls[#controls + 1] = checkbox(settings, "Show distance in yards", -132,
-		function() return db.showDistances end,
-		function(value) db.showDistances = value NR.Radar:ApplySettings() end)
-
-	controls[#controls + 1] = checkbox(settings, "Start automatically on login", -160,
-		function() return db.autoStart end,
-		function(value) db.autoStart = value end)
-
-	controls[#controls + 1] = slider(settings, "Radar radius", 100, 400, 10, "%d px", -212,
-		function() return db.radius end,
-		function(value) db.radius = value NR.Radar:ApplySettings() end)
-
-	controls[#controls + 1] = slider(settings, "Icon size", 8, 40, 2, "%d px", -272,
+	section(settings, "Nodes", -74, 424)
+	add(slider(settings, "Icon size", 8, 64, 2, "%d px", LEFT + 4, -106, SLIDER_WIDTH,
 		function() return db.iconSize end,
-		function(value) db.iconSize = value NR.Radar:ApplySettings() end)
+		function(value) db.iconSize = value NR.Radar:ApplySettings() end))
+	add(slider(settings, "Node opacity", 10, 100, 5, "%d%%", RIGHT + 4, -106, SLIDER_WIDTH,
+		function() return db.nodeAlpha * 100 end,
+		function(value) db.nodeAlpha = value / 100 end))
+	add(checkbox(settings, "Show distance in yards", LEFT, -140,
+		function() return db.showDistances end,
+		function(value) db.showDistances = value NR.Radar:ApplySettings() end))
+	add(checkbox(settings, "Red when your skill is too low", RIGHT, -140,
+		function() return db.colorBySkill end,
+		function(value) db.colorBySkill = value end))
+	add(checkbox(settings, "Highlight a node when it first appears", LEFT, -170,
+		function() return db.showSparkle end,
+		function(value) db.showSparkle = value end))
 
-	controls[#controls + 1] = slider(settings, "Seconds between scans", 0.5, 10, 0.5, "%.1f s", -332,
+	section(settings, "Radar", -214, 424)
+	add(slider(settings, "Radar radius", 100, 400, 10, "%d px", LEFT + 4, -246, SLIDER_WIDTH,
+		function() return db.radius end,
+		function(value) db.radius = value NR.Radar:ApplySettings() end))
+	add(slider(settings, "Grid opacity", 5, 100, 5, "%d%%", RIGHT + 4, -246, SLIDER_WIDTH,
+		function() return db.gridAlpha * 100 end,
+		function(value) db.gridAlpha = value / 100 NR.Radar:ApplySettings() end))
+	add(checkbox(settings, "Show the range rings and axes", LEFT, -280,
+		function() return db.showGrid end,
+		function(value) db.showGrid = value NR.Radar:ShowGrid(value) end))
+
+	section(settings, "Scanning", -324, 424)
+	add(slider(settings, "Seconds between scans", 0.5, 10, 0.5, "%.1f s", LEFT + 4, -356,
+		SLIDER_WIDTH,
 		function() return db.scanInterval end,
-		function(value) db.scanInterval = value end)
+		function(value) db.scanInterval = value end))
+	add(checkbox(settings, "Pause while in combat", RIGHT, -354,
+		function() return db.pauseInCombat end,
+		function(value) db.pauseInCombat = value NR.Scanner.pauseInCombat = value end))
+
+	section(settings, "Interface", -400, 424)
+	add(checkbox(settings, "Show the control window", LEFT, -430,
+		function() return db.showWindow end,
+		function(value) db.showWindow = value Options:ApplySettings() end))
+	add(checkbox(settings, "Start automatically on login", RIGHT, -430,
+		function() return db.autoStart end,
+		function(value) db.autoStart = value end))
+	add(checkbox(settings, "Debug: log every scan", LEFT, -460,
+		function() return db.debugLog end,
+		function(value) db.debugLog = value end))
+	add(checkbox(settings, "Debug: place test nodes", RIGHT, -460,
+		function() return db.debugTestNodes end,
+		function(value) db.debugTestNodes = value NR.SetTestNodes(value) end))
 
 	local reset = CreateFrame("Button", nil, settings, "UIPanelButtonTemplate")
 	reset:SetSize(150, 24)
@@ -132,6 +171,7 @@ local function buildWindow()
 				db[key] = type(value) == "table" and CopyTable(value) or value
 			end
 		end
+		NR.Scanner.pauseInCombat = db.pauseInCombat
 		NR.Radar:ApplySettings()
 		Options:ApplySettings()
 		settings.refresh()
