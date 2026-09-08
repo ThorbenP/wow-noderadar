@@ -1,1 +1,1 @@
-Shows the herb and ore nodes that really exist around your character on a screen-centred radar, so you stop riding past the yellow dots on your minimap. Every icon is confirmed live, not guessed from a database. Requires GatherMate2 and active tracking.
+Shows the herb and ore nodes that really exist around your character on a screen-centred radar, so you stop riding past the yellow dots on your minimap. Every icon is confirmed live, not guessed from a database. Requires GatherMate2 with imported data.

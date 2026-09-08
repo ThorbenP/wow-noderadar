@@ -94,9 +94,12 @@ local function hold()
 	-- Addon pins (GatherMate, Questie) are mouse-enabled child frames sitting exactly
 	-- where a node is only *expected*. Their tooltips would read as confirmed nodes,
 	-- so they leave the hit test for the duration of the scan.
+	-- the child list is fetched once: rebuilding it per iteration turns a minimap
+	-- crowded with addon pins into a visible frame stall
 	held.mouseChildren = {}
-	for index = 1, select("#", Minimap:GetChildren()) do
-		local child = select(index, Minimap:GetChildren())
+	local children = { Minimap:GetChildren() }
+	for index = 1, #children do
+		local child = children[index]
 		if child and child.IsMouseEnabled and child:IsMouseEnabled() then
 			held.mouseChildren[#held.mouseChildren + 1] = child
 			child:EnableMouse(false)
