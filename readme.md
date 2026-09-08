@@ -16,15 +16,30 @@ entirely optional, the addon stays free either way.
 
 ## Requirements
 
-- **[GatherMate2](https://www.curseforge.com/wow/addons/gathermate2)** and
-  **GatherMate2_Data**, with the data imported once:
-  `/gathermate` → *Import* → pick *Mining* and *Herbalism* → *Import
-  GatherMate2Data*. Without that import your database is empty and NodeRadar has
-  nothing to aim at.
-- **An active tracking ability** — *Find Minerals* or *Find Herbs*. The client
-  draws minimap blips only for the tracking type that is currently active, and
-  Burning Crusade allows exactly one at a time. NodeRadar can only confirm what
-  the client is willing to draw.
+**Required: [GatherMate2](https://www.curseforge.com/wow/addons/gathermate2).**
+Not for its node positions — for three other things NodeRadar has no substitute
+for: the localised node names that tell a *Copper Vein* tooltip apart from an
+innkeeper's, the HereBeDragons coordinate maths behind every yard distance, and
+the minimap's yards-per-zoom table. Without it the addon reports that it is
+disabled and does nothing.
+
+**Required: an active tracking ability** — *Find Minerals* or *Find Herbs*. The
+client draws minimap blips only for the tracking type that is currently active,
+and Burning Crusade allows exactly one at a time. NodeRadar can only confirm what
+the client is willing to draw.
+
+**Strongly recommended: import GatherMate2_Data.**
+`/gathermate` → *Import* → pick *Mining* and *Herbalism* → *Import
+GatherMate2Data*. This is a speed setting, not a switch: the imported positions
+give the scan something to aim at, so a pass costs a handful of samples instead
+of sweeping the minimap blind.
+
+Without the import NodeRadar still works. It notices the empty candidate list and
+falls back to a blind sweep of the whole tracking range, which costs roughly 35
+sample points instead of 4 and therefore holds the minimap far more often. New
+nodes take a second or two longer to appear. Everything else is identical, and
+confirmed nodes are just as real — the tooltip is the proof either way, never the
+database.
 
 ## Installation
 
@@ -67,9 +82,9 @@ an addon, so the minimap comes to the cursor instead. When a tooltip appears, it
 text is matched against GatherMate2's node names, and the offset from the minimap
 centre gives direction and distance to the node.
 
-Aiming those samples is what GatherMate2 is for: its database says where a node
-*might* be, which turns a blind sweep of ~180 sample points into a handful of
-targeted ones. The database supplies the candidate list and the exact position,
+Aiming those samples is what the imported database is for: it says where a node
+*might* be, which turns a blind sweep of roughly 35 sample points into a handful
+of targeted ones. The database supplies the candidate list and the exact position,
 the tooltip supplies the proof that the node is there right now. Where the
 database knows nothing about your zone, the addon falls back to sweeping the
 whole minimap in slices.

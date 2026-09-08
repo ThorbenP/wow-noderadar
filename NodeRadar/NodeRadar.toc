@@ -1,6 +1,6 @@
 ## Interface: 20506
 ## Title: NodeRadar
-## Notes: Shows the herb and ore nodes that actually exist around your character
+## Notes: Shows the herb and ore nodes that actually exist around your character. Requires GatherMate2.
 ## Author: ThPi
 ## Version: 1.0.0
 ## OptionalDeps: GatherMate2
