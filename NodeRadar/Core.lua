@@ -40,6 +40,8 @@ local zoneID, playerX, playerY
 local mapRadius, halfWidth, halfHeight
 local rotateMinimap
 local grid, gridCursor, gridRadius = nil, 1, nil
+local blindCounter = 0
+local forceBlind = false
 local scanRange
 local blindMode = false
 local sinceScan, sinceRebuild = 0, 0
@@ -147,7 +149,8 @@ local function rebuildCandidates()
 
 	local seen = {}
 	for _, dbType in ipairs(GATHER_TYPES) do
-		for coord, nodeID in GatherMate:FindNearbyNode(zoneID, zx, zy, dbType, scanRange) do
+		for coord, nodeID in GatherMate:FindNearbyNode(zoneID, zx, zy, dbType,
+				forceBlind and 0 or scanRange) do
 			local key = dbType .. coord
 			seen[key] = true
 			if not nodes[key] then
@@ -195,19 +198,35 @@ function Scanner.onSample(tag, text, ox, oy, ring)
 		return
 	end
 
-	-- a blip the database does not know about: its position comes from the sample itself
+	-- A blip the database does not know about: its position comes from the sample
+	-- itself and is therefore only as precise as one grid step. A nearby earlier hit
+	-- is the same node, not a second one, so it is refreshed instead of duplicated.
 	local wx, wy = worldFromOffset(ox, oy)
 	if not wx then return end
-	local key = string.format("blind:%d:%d", math.floor(wx / 8), math.floor(wy / 8))
-	hits[key] = { wx = wx, wy = wy, texture = textureFor(dbType, nodeID),
-		seenAt = scanClock, ttl = BLIND_HIT_TTL }
+
+	local tolerance = GRID_STEP / (halfWidth / mapRadius) * 0.75
+	for _, hit in pairs(hits) do
+		if hit.blind then
+			local dx, dy = hit.wx - wx, hit.wy - wy
+			if dx * dx + dy * dy <= tolerance * tolerance then
+				hit.seenAt, hit.ttl = scanClock, BLIND_HIT_TTL
+				hit.texture = textureFor(dbType, nodeID)
+				return
+			end
+		end
+	end
+
+	blindCounter = blindCounter + 1
+	hits["blind:" .. blindCounter] = { wx = wx, wy = wy, blind = true,
+		texture = textureFor(dbType, nodeID), seenAt = scanClock, ttl = BLIND_HIT_TTL }
 end
 
 local function buildGrid()
-	local points = {}
+	-- the centre is always sampled: at a small radius the loop below yields nothing
+	local points = { { ox = 0, oy = 0 } }
 	for x = -gridRadius, gridRadius, GRID_STEP do
 		for y = -gridRadius, gridRadius, GRID_STEP do
-			if x * x + y * y <= gridRadius * gridRadius then
+			if x * x + y * y <= gridRadius * gridRadius and (x ~= 0 or y ~= 0) then
 				points[#points + 1] = { ox = x, oy = y }
 			end
 		end
@@ -442,6 +461,12 @@ SlashCmdList["NODERADAR"] = function(msg)
 		return
 	elseif cmd == "options" or cmd == "config" then
 		NR.Options:Open()
+		return
+	elseif cmd == "blind" then
+		forceBlind = not forceBlind
+		wipe(nodes)
+		wipe(hits)
+		out("blind sweep forced: " .. (forceBlind and "on - the database is ignored" or "off"))
 		return
 	end
 	if running then
