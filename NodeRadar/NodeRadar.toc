@@ -2,7 +2,7 @@
 ## Title: NodeRadar
 ## Notes: Shows the herb and ore nodes that actually exist around your character. Requires GatherMate2.
 ## Author: ThPi
-## Version: 1.0.0
+## Version: 1.0.1
 ## Dependencies: GatherMate2
 ## SavedVariables: NodeRadarDB
 ## X-Category: Map

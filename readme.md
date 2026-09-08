@@ -116,6 +116,9 @@ Everything is restored when the pass ends.
   samples produced 0 tooltips against a 24% baseline. Instead of dropping the
   display, hit expiry pauses while scanning is impossible, so the radar keeps
   showing what it last confirmed until you let go.
+- **No scanning in combat.** The minimap and the mouse focus are not taken away
+  mid fight. As with mouselook, the radar holds what it last confirmed instead of
+  clearing, and resumes when the fight ends.
 - **Only nodes the database knows about.** A spawn point missing from
   GatherMate2's data is never aimed at and therefore never confirmed.
 - **One tracking type at a time**, which is a Burning Crusade limitation, not an

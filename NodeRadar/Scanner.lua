@@ -149,8 +149,13 @@ end
 -- Measured: during mouselook the client resolves no mouse focus at all - 22 samples
 -- produced 0 tooltips against a 24% baseline. Scanning is impossible while a button is
 -- held, and the caller pauses hit expiry for exactly that reason.
+-- Combat is a deliberate choice rather than a technical limit: taking the minimap and
+-- the mouse focus away mid fight is worse than a stale radar.
 local function blocked()
-	return IsMouseButtonDown() or SpellIsTargeting() or not Minimap:IsVisible()
+	return IsMouseButtonDown()
+		or UnitAffectingCombat("player")
+		or SpellIsTargeting()
+		or not Minimap:IsVisible()
 end
 
 driver:SetScript("OnUpdate", function()
