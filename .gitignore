@@ -1,0 +1,17 @@
+# Packaged archives, rebuilt by build.sh
+dist/
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local scratch notes, never versioned
+_notes_*.md

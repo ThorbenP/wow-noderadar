@@ -1,0 +1,15 @@
+## Interface: 20506
+## Title: NodeRadar
+## Notes: Shows the herb and ore nodes that actually exist around your character
+## Author: ThPi
+## Version: 1.0.0
+## OptionalDeps: GatherMate2
+## SavedVariables: NodeRadarDB
+## X-Category: Map
+## X-License: GPL-3.0-or-later
+## X-Website: https://github.com/ThorbenP/wow-noderadar
+
+Scanner.lua
+Radar.lua
+Options.lua
+Core.lua
