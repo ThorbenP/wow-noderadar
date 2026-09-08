@@ -9,5 +9,9 @@ archive="dist/NodeRadar-v${version}.zip"
 
 mkdir -p dist
 rm -f "$archive"
+
+# the GPL requires the licence to travel with the code, so it goes inside the
+# folder players actually install
+cp LICENSE NodeRadar/LICENSE
 python3 -m zipfile -c "$archive" NodeRadar
 echo "$archive"
