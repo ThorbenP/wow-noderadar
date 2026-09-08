@@ -8,8 +8,6 @@ end
 local Scanner, Radar = NR.Scanner, NR.Radar
 
 local GATHER_TYPES = { "Herb Gathering", "Mining" }
--- the blind sweep needs many passes to cover the minimap, so it may not wait
-local BLIND_SCAN_INTERVAL = 0.25
 local BURST = 30
 -- minimap blips are roughly 12px wide, so a coarser grid starts missing them
 local GRID_STEP = 9
@@ -33,6 +31,15 @@ local PROBE = {
 	{ 5, 0, "east" }, { -5, 0, "west" },
 	{ 0, 5, "north" }, { 0, -5, "south" },
 }
+-- A blind hit's position is the sample point, so it is only as precise as the grid.
+-- Sampling this pattern around the estimate and taking the centroid of the hits
+-- measures the blip instead of merely touching it.
+local REFINE = {
+	{ 0, 0 }, { 4, 0 }, { -4, 0 }, { 0, 4 }, { 0, -4 },
+	{ 4, 4 }, { 4, -4 }, { -4, 4 }, { -4, -4 },
+}
+-- once refined, two hits this close are the same blip
+local MERGE_YARDS = 15
 
 local GatherMate, HBD, minimapSize
 local nodes, hits, entries = {}, {}, {}
@@ -172,10 +179,16 @@ local diag = { ringHits = {}, samples = 0, tooltips = 0, matched = 0, log = {} }
 
 -- rolling record: the miss is intermittent, so it has to be caught whenever it happens
 local function logTooltip(matched, ring, text)
+	local entry = string.format("%s | %s",
+		matched and "MATCH" or "NOMATCH", (text:gsub("\n", " / ")))
 	local log = diag.log
-	log[#log + 1] = string.format("%s ring=%s | %s",
-		matched and "MATCH" or "|cffff4444NOMATCH|r", tostring(ring), (text:gsub("\n", " / ")))
-	if #log > 25 then table.remove(log, 1) end
+	-- distinct texts only: a single node hit fifty times would otherwise crowd out
+	-- every other blip the sweep saw
+	for _, existing in ipairs(log) do
+		if existing == entry then return end
+	end
+	log[#log + 1] = entry
+	if #log > 40 then table.remove(log, 1) end
 end
 
 function Scanner.onSample(tag, text, ox, oy, ring)
@@ -204,11 +217,26 @@ function Scanner.onSample(tag, text, ox, oy, ring)
 	local wx, wy = worldFromOffset(ox, oy)
 	if not wx then return end
 
-	local tolerance = GRID_STEP / (halfWidth / mapRadius) * 0.75
+	-- One blip is wider than the grid spacing, so several sample points hit the same
+	-- node from up to a grid step away. The tolerance has to exceed that spacing or
+	-- one node shows up as several icons; averaging pulls the estimate towards the
+	-- centre of the hits.
+	local tracked = tag and hits[tag]
+	if tracked and tracked.blind then
+		tracked.sumX = (tracked.sumX or 0) + wx
+		tracked.sumY = (tracked.sumY or 0) + wy
+		tracked.count = (tracked.count or 0) + 1
+		tracked.seenAt, tracked.ttl = scanClock, BLIND_HIT_TTL
+		tracked.texture = textureFor(dbType, nodeID)
+		return
+	end
+
+	local tolerance = GRID_STEP / (halfWidth / mapRadius) * 1.5
 	for _, hit in pairs(hits) do
 		if hit.blind then
 			local dx, dy = hit.wx - wx, hit.wy - wy
 			if dx * dx + dy * dy <= tolerance * tolerance then
+				hit.wx, hit.wy = (hit.wx + wx) / 2, (hit.wy + wy) / 2
 				hit.seenAt, hit.ttl = scanClock, BLIND_HIT_TTL
 				hit.texture = textureFor(dbType, nodeID)
 				return
@@ -234,9 +262,35 @@ local function buildGrid()
 	return points
 end
 
+-- Fold each blind hit's accumulated sample points into its centroid, then drop hits
+-- that converged onto the same blip.
+local function settleBlindHits()
+	for _, hit in pairs(hits) do
+		if hit.blind and hit.count and hit.count > 0 then
+			hit.wx, hit.wy = hit.sumX / hit.count, hit.sumY / hit.count
+			hit.sumX, hit.sumY, hit.count = nil, nil, nil
+			hit.refined = true
+		end
+	end
+
+	for keyA, a in pairs(hits) do
+		if a.blind and a.refined then
+			for keyB, b in pairs(hits) do
+				if keyA ~= keyB and b.blind and b.refined then
+					local dx, dy = a.wx - b.wx, a.wy - b.wy
+					if dx * dx + dy * dy <= MERGE_YARDS * MERGE_YARDS then
+						hits[a.seenAt >= b.seenAt and keyB or keyA] = nil
+					end
+				end
+			end
+		end
+	end
+end
+
 local function queueScan()
 	local pending = {}
 	local now = GetTime()
+	settleBlindHits()
 	for key, node in pairs(nodes) do
 		local ox, oy = minimapOffset(playerX - node.wx, playerY - node.wy)
 		if ox then
@@ -261,12 +315,25 @@ local function queueScan()
 		nodes[point.tag].lastCheck = now
 	end
 
-	-- without candidates from the database there is nothing to aim at, so sweep the
-	-- whole minimap a slice at a time
 	blindMode = #pending == 0
+
+	-- known blind hits get measured first, discovery fills whatever budget is left
+	if blindMode then
+		for key, hit in pairs(hits) do
+			if hit.blind then
+				local ox, oy = minimapOffset(playerX - hit.wx, playerY - hit.wy)
+				if ox then
+					for _, offset in ipairs(REFINE) do
+						pending[#pending + 1] = { ox = ox + offset[1], oy = oy + offset[2], tag = key }
+					end
+				end
+			end
+		end
+	end
+
 	if blindMode then
 		grid = grid or buildGrid()
-		for _ = 1, BURST do
+		for _ = #pending + 1, BURST do
 			if gridCursor > #grid then gridCursor = 1 end
 			pending[#pending + 1] = grid[gridCursor]
 			gridCursor = gridCursor + 1
@@ -330,8 +397,7 @@ driver:SetScript("OnUpdate", function(_, elapsed)
 	end
 
 	sinceScan = sinceScan + elapsed
-	local interval = blindMode and BLIND_SCAN_INTERVAL or db.scanInterval
-	if sinceScan >= interval and not Scanner:IsBusy() then
+	if sinceScan >= db.scanInterval and not Scanner:IsBusy() then
 		sinceScan = 0
 		queueScan()
 	end
@@ -414,6 +480,14 @@ loader:SetScript("OnEvent", function()
 end)
 
 local function writeDiagnostics()
+	local shown = {}
+	for key, hit in pairs(hits) do
+		local distance = math.sqrt((playerX - hit.wx) ^ 2 + (playerY - hit.wy) ^ 2)
+		shown[#shown + 1] = string.format("%s d=%.1fyd wx=%.1f wy=%.1f %s%s",
+			key, distance, hit.wx, hit.wy,
+			hit.blind and "blind" or "database", hit.refined and " refined" or "")
+	end
+
 	local candidates, confirmed = {}, 0
 	for key, node in pairs(nodes) do
 		local distance = math.sqrt((playerX - node.wx) ^ 2 + (playerY - node.wy) ^ 2)
@@ -431,8 +505,14 @@ local function writeDiagnostics()
 	for index, entry in ipairs(diag.log) do log[index] = entry end
 
 	NodeRadarDB = NodeRadarDB or {}
-	NodeRadarDB.debug = {
+	-- snapshots accumulate so two modes can be compared from one session
+	if type(NodeRadarDB.debug) ~= "table" or NodeRadarDB.debug.takenAt then
+		NodeRadarDB.debug = {}
+	end
+	local snapshot = {
+		mode = forceBlind and "forced blind" or (blindMode and "blind" or "targeted"),
 		takenAt = date("%Y-%m-%d %H:%M:%S"),
+		shownNodes = shown,
 		zoom = Minimap:GetZoom(),
 		minimapZoomCVar = GetCVar("minimapZoom"),
 		mapRadius = mapRadius,
@@ -446,9 +526,20 @@ local function writeDiagnostics()
 		candidates = candidates,
 		confirmed = confirmed,
 		tracking = GetTrackingTexture and GetTrackingTexture() or "none",
+		-- standalone mode would need these instead of GatherMate's helpers
+		hasUnitPosition = type(UnitPosition) == "function",
+		unitPosition = type(UnitPosition) == "function" and { UnitPosition("player") } or nil,
+		hasTrackingInfo = C_Minimap and type(C_Minimap.GetTrackingInfo) == "function",
+		numTrackingTypes = C_Minimap and C_Minimap.GetNumTrackingTypes
+			and C_Minimap.GetNumTrackingTypes() or 0,
 	}
-	out(string.format("samples %d, tooltips %d, matched %d, %d/%d candidates confirmed - written to SavedVariables",
-		diag.samples, diag.tooltips, diag.matched, confirmed, #candidates))
+
+	table.insert(NodeRadarDB.debug, snapshot)
+	while #NodeRadarDB.debug > 6 do
+		table.remove(NodeRadarDB.debug, 1)
+	end
+	out(string.format("snapshot %d (%s): %d nodes shown, %d/%d candidates confirmed, %d tooltips",
+		#NodeRadarDB.debug, snapshot.mode, #shown, confirmed, #candidates, diag.tooltips))
 end
 
 SLASH_NODERADAR1 = "/nr"

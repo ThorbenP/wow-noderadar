@@ -55,17 +55,37 @@ local function slider(parent, label, minimum, maximum, step, format, y, get, set
 	return bar
 end
 
-local function buildPanel()
-	settings = CreateFrame("Frame")
-	settings.name = "NodeRadar"
+local function buildWindow()
+	settings = CreateFrame("Frame", "NodeRadarSettingsFrame", UIParent)
+	settings:SetSize(400, 440)
+	settings:SetPoint("CENTER")
+	settings:SetFrameStrata("DIALOG")
+	settings:SetMovable(true)
+	settings:EnableMouse(true)
+	settings:RegisterForDrag("LeftButton")
+	settings:SetScript("OnDragStart", settings.StartMoving)
+	settings:SetScript("OnDragStop", settings.StopMovingOrSizing)
+	settings:Hide()
+
+	local border = settings:CreateTexture(nil, "BACKGROUND")
+	border:SetPoint("TOPLEFT", -1, 1)
+	border:SetPoint("BOTTOMRIGHT", 1, -1)
+	border:SetColorTexture(0.6, 0.9, 0.7, 0.35)
+
+	local background = settings:CreateTexture(nil, "BACKGROUND")
+	background:SetAllPoints()
+	background:SetColorTexture(0, 0, 0, 0.88)
 
 	local title = settings:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge")
-	title:SetPoint("TOPLEFT", 16, -16)
+	title:SetPoint("TOPLEFT", 16, -14)
 	title:SetText("NodeRadar")
 
+	local close = CreateFrame("Button", nil, settings, "UIPanelCloseButton")
+	close:SetPoint("TOPRIGHT", 2, 2)
+
 	local note = settings:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
-	note:SetPoint("TOPLEFT", 16, -42)
-	note:SetWidth(500)
+	note:SetPoint("TOPLEFT", 16, -40)
+	note:SetWidth(360)
 	note:SetJustifyH("LEFT")
 	note:SetText("Shows herb and ore nodes that really exist in minimap range. "
 		.. "Needs the matching tracking ability to be active.")
@@ -102,7 +122,7 @@ local function buildPanel()
 
 	local reset = CreateFrame("Button", nil, settings, "UIPanelButtonTemplate")
 	reset:SetSize(150, 24)
-	reset:SetPoint("TOPLEFT", 24, -400)
+	reset:SetPoint("BOTTOMLEFT", 20, 16)
 	reset:SetText("Restore defaults")
 	reset:SetScript("OnClick", function()
 		for key, value in pairs(NR.defaults) do
@@ -121,15 +141,38 @@ local function buildPanel()
 		for _, control in ipairs(controls) do control:Refresh() end
 	end
 	settings:SetScript("OnShow", settings.refresh)
+	tinsert(UISpecialFrames, "NodeRadarSettingsFrame")
+end
 
-	-- Registration hands back the id that OpenToCategory expects; never overwrite the
-	-- category's own ID field, GetID reads exactly that.
+-- Players look for addon settings in the client's own options list, so there is an
+-- entry there - as a shortcut into the one real window, never as a second copy of
+-- the controls.
+local function registerBlizzardEntry()
+	local panel = CreateFrame("Frame")
+	panel.name = "NodeRadar"
+
+	local title = panel:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge")
+	title:SetPoint("TOPLEFT", 16, -16)
+	title:SetText("NodeRadar")
+
+	local note = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+	note:SetPoint("TOPLEFT", 16, -44)
+	note:SetWidth(500)
+	note:SetJustifyH("LEFT")
+	note:SetText("Shows herb and ore nodes that really exist in minimap range. "
+		.. "All settings live in NodeRadar's own window, reachable from the button "
+		.. "below, from the gear on the control window, or with /nr options.")
+
+	local open = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
+	open:SetSize(200, 24)
+	open:SetPoint("TOPLEFT", 16, -96)
+	open:SetText("Open NodeRadar settings")
+	open:SetScript("OnClick", function() Options:Open() end)
+
 	if Settings and Settings.RegisterCanvasLayoutCategory then
-		local category = Settings.RegisterCanvasLayoutCategory(settings, settings.name)
-		Settings.RegisterAddOnCategory(category)
-		Options.categoryID = category.GetID and category:GetID() or category
+		Settings.RegisterAddOnCategory(Settings.RegisterCanvasLayoutCategory(panel, panel.name))
 	elseif InterfaceOptions_AddCategory then
-		InterfaceOptions_AddCategory(settings)
+		InterfaceOptions_AddCategory(panel)
 	end
 end
 
@@ -183,21 +226,14 @@ end
 
 function Options:Init(savedDB)
 	db = savedDB
-	buildPanel()
+	buildWindow()
+	registerBlizzardEntry()
 	self:CreateWindow()
 	self:ApplySettings()
 end
 
 function Options:Open()
-	if Settings and Settings.OpenToCategory and self.categoryID then
-		Settings.OpenToCategory(self.categoryID)
-		return
-	end
-	if InterfaceOptionsFrame_OpenToCategory then
-		-- the old call takes the panel name and lands on the wrong page the first time
-		InterfaceOptionsFrame_OpenToCategory(settings.name)
-		InterfaceOptionsFrame_OpenToCategory(settings.name)
-	end
+	settings:SetShown(not settings:IsShown())
 end
 
 function Options:ApplySettings()
