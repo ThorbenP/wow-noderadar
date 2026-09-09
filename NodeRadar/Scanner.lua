@@ -8,11 +8,19 @@ local BLANK = "Interface\\AddOns\\NodeRadar\\Blank.tga"
 -- was Interface\Minimap\ObjectIcons and its cells do not line up with it
 local BLIP_DEFAULT = "Interface\\Minimap\\ObjectIconsAtlas"
 local ARROW_DEFAULT = "Interface\\Minimap\\MinimapArrow"
+-- party and raid members are drawn from their own sheet, not the tracking atlas
+local CLASS_BLIP_DEFAULT = "Interface\\Minimap\\PartyRaidBlips"
 -- fallback for clients without SetMouseClickEnabled
 local MUTED_SCRIPTS = { "OnMouseDown", "OnMouseUp", "OnMouseWheel" }
 
 local queue, cursor = {}, 1
-local pending, held
+local held
+-- the point waiting for its tooltip, kept as plain locals: one table per sample point
+-- is one allocation per frame for the whole pass
+local sampleX, sampleY, samplePayload, sampling
+-- the handlers of the pass being run, so a caller reads its own samples and hears when
+-- the pass ends - a dropped pass is silent otherwise
+local onSample, onDone
 local driver = CreateFrame("Frame")
 driver:Hide()
 
@@ -21,6 +29,7 @@ Scanner.canSplitMouse = type(Minimap.SetMouseClickEnabled) == "function"
 Scanner.canHideBlips = type(Minimap.SetBlipTexture) == "function"
 Scanner.pauseInCombat = false
 Scanner.canHideArrow = type(Minimap.SetPlayerTexture) == "function"
+Scanner.canHideClassBlips = type(Minimap.SetClassBlipTexture) == "function"
 
 -- The client resets the tooltip's alpha when it shows it, so hiding it once is not
 -- enough; this fires at the moment of showing, before the frame is drawn.
@@ -58,9 +67,26 @@ end
 
 -- the minimap tooltip lists everything under the cursor, so every line matters:
 -- a node can sit below a vendor or another blip
+-- names whatever is holding the tooltip instead of the minimap, so a pin covering the
+-- spot being probed shows up as a count rather than as a sample that read empty
+local function stolenBy()
+	local owner = GameTooltip:GetOwner()
+	if owner and owner ~= Minimap and owner ~= UIParent then
+		return (owner.GetName and owner:GetName()) or "unnamed frame"
+	end
+	local focus = GetMouseFoci and GetMouseFoci() or nil
+	focus = focus and focus[1] or (GetMouseFocus and GetMouseFocus())
+	if focus and focus ~= Minimap then
+		return (focus.GetName and focus:GetName()) or "unnamed frame"
+	end
+	return "unknown"
+end
+
+-- Returns the tooltip text, or nil plus the frame that took it: a tooltip owned by an
+-- addon pin is not proof of a node, but it is not "nothing there" either.
 local function tooltipText()
 	if not GameTooltip:IsShown() then return nil end
-	if not ownerIsMinimap() or not focusIsMinimap() then return nil end
+	if not ownerIsMinimap() or not focusIsMinimap() then return nil, stolenBy() end
 
 	local lines
 	for index = 1, GameTooltip:NumLines() do
@@ -115,11 +141,13 @@ local function hold()
 		end
 	end
 
-	-- alpha hides the map image only; blips and the arrow render on top of it
+	-- alpha hides the map image only; tracking blips, the player arrow and party blips
+	-- render on top of it and each needs its own texture swapped out
 	Minimap:SetAlpha(0)
 	Minimap:SetFrameStrata("TOOLTIP")
 	if Scanner.canHideBlips then Minimap:SetBlipTexture(BLANK) end
 	if Scanner.canHideArrow then Minimap:SetPlayerTexture(BLANK) end
+	if Scanner.canHideClassBlips then Minimap:SetClassBlipTexture(BLANK) end
 	refreshBlips()
 	return true
 end
@@ -147,6 +175,7 @@ local function release()
 
 	if Scanner.canHideBlips then Minimap:SetBlipTexture(BLIP_DEFAULT) end
 	if Scanner.canHideArrow then Minimap:SetPlayerTexture(ARROW_DEFAULT) end
+	if Scanner.canHideClassBlips then Minimap:SetClassBlipTexture(CLASS_BLIP_DEFAULT) end
 	refreshBlips()
 
 	local tooltipAlpha = held.tooltipAlpha
@@ -155,28 +184,35 @@ local function release()
 	GameTooltip:SetAlpha(tooltipAlpha)
 end
 
--- Measured: during mouselook the client resolves no mouse focus at all - 22 samples
--- produced 0 tooltips against a 24% baseline. So mouselook, not the button state, is
--- what makes scanning impossible.
--- Attacking a target is a right click, which enters mouselook for a moment as well;
--- only holding it past this grace counts as turning the camera.
+-- A held mouse button binds the client's mouse focus, and a bound focus is what makes
+-- scanning impossible - not which button it is. Mouselook, entered by either button,
+-- resolves no focus at all: measured, 22 samples produced 0 tooltips against a 24%
+-- baseline. A button held on a frame keeps that frame focused however far the minimap
+-- is dragged underneath. Both wait past a grace, because clicking a target or a node
+-- is a button press as well.
 local CLICK_GRACE = 0.25
-local mouselookSince
+local mouseSince
+
+local function mouseBound()
+	if IsMouselooking and IsMouselooking() then return "turning the camera" end
+	if IsMouseButtonDown and IsMouseButtonDown() then return "a mouse button is held" end
+end
 
 -- Combat is a setting rather than a technical limit: scanning works in a fight, it
 -- just takes the minimap and the mouse focus while it runs.
 local function blocked()
-	if IsMouselooking and IsMouselooking() then
-		mouselookSince = mouselookSince or GetTime()
+	local bound = mouseBound()
+	if bound then
+		mouseSince = mouseSince or GetTime()
 	else
-		mouselookSince = nil
+		mouseSince = nil
 	end
 
 	if UnitIsDeadOrGhost("player") then
 		return true, "dead"
 	end
-	if mouselookSince and GetTime() - mouselookSince > CLICK_GRACE then
-		return true, "turning the camera"
+	if mouseSince and GetTime() - mouseSince > CLICK_GRACE then
+		return true, bound
 	end
 	if Scanner.pauseInCombat and UnitAffectingCombat("player") then
 		return true, "in combat"
@@ -190,31 +226,38 @@ local function blocked()
 	return false
 end
 
+-- ends the pass and tells its owner whether every point was read
+local function finish(completed)
+	release()
+	queue, cursor, sampling = {}, 1, false
+	driver:Hide()
+
+	local done = onDone
+	onSample, onDone = nil, nil
+	if done then done(completed) end
+end
+
 driver:SetScript("OnUpdate", function()
-	if pending then
-		if Scanner.onSample then
-			local scale = Minimap:GetEffectiveScale()
-			local cx, cy = GetCursorPosition()
-			Scanner.onSample(pending.tag, tooltipText(), cx / scale - pending.x, cy / scale - pending.y,
-				pending.ring)
-		end
+	local scale = Minimap:GetEffectiveScale()
+	local cursorX, cursorY = GetCursorPosition()
+	cursorX, cursorY = cursorX / scale, cursorY / scale
+
+	if sampling then
+		sampling = false
+		local text, stolen = tooltipText()
+		onSample(samplePayload, text, cursorX - sampleX, cursorY - sampleY, stolen)
 		GameTooltip:Hide()
-		pending = nil
 	end
 
 	if cursor > #queue then
-		release()
-		driver:Hide()
-		queue, cursor = {}, 1
+		finish(true)
 		return
 	end
 
 	-- queued offsets go stale while the scan waits, so drop the pass and let the
 	-- caller re-aim once scanning is possible again
 	if blocked() or not hold() then
-		release()
-		queue, cursor, pending = {}, 1, nil
-		driver:Hide()
+		finish(false)
 		return
 	end
 
@@ -223,12 +266,10 @@ driver:SetScript("OnUpdate", function()
 	local point = queue[cursor]
 	cursor = cursor + 1
 
-	local scale = Minimap:GetEffectiveScale()
-	local cx, cy = GetCursorPosition()
-	local x, y = cx / scale - point.ox, cy / scale - point.oy
+	local x, y = cursorX - point.ox, cursorY - point.oy
 	Minimap:ClearAllPoints()
 	Minimap:SetPoint("CENTER", UIParent, "BOTTOMLEFT", x, y)
-	pending = { x = x, y = y, tag = point.tag, ring = point.ring }
+	sampleX, sampleY, samplePayload, sampling = x, y, point.payload, true
 end)
 
 -- diagnostics: which frame produced the tooltip that was just read
@@ -252,17 +293,21 @@ function Scanner:Restore()
 	release()
 	if Scanner.canHideBlips then Minimap:SetBlipTexture(BLIP_DEFAULT) end
 	if Scanner.canHideArrow then Minimap:SetPlayerTexture(ARROW_DEFAULT) end
+	if Scanner.canHideClassBlips then Minimap:SetClassBlipTexture(CLASS_BLIP_DEFAULT) end
 	refreshBlips()
 end
 
-function Scanner:Submit(points)
+-- Each point carries an opaque payload handed straight back to sampler, so a caller
+-- names its points however it likes. done(completed) fires once, on the pass ending
+-- or being dropped.
+function Scanner:Submit(points, sampler, done)
 	if #points == 0 then return end
-	queue, cursor, pending = points, 1, nil
+	queue, cursor, sampling = points, 1, false
+	onSample, onDone = sampler, done
 	driver:Show()
 end
 
 function Scanner:Abort()
-	queue, cursor, pending = {}, 1, nil
-	release()
-	driver:Hide()
+	if not driver:IsShown() then return end
+	finish(false)
 end
