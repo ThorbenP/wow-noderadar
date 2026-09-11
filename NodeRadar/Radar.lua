@@ -11,6 +11,7 @@ local SPARKLE_SECONDS = 8
 local SPARKLE_TEXTURE = "Interface\\Cooldown\\star4"
 
 local frame, grid
+local EMPTY = {}
 -- pins are kept per node key, not per index: the render order is not stable, and a
 -- running animation must stay with its own node
 local pins, free, active = {}, {}, {}
@@ -176,15 +177,17 @@ end
 
 function Radar:SetShown(shown)
 	frame:SetShown(shown)
-	if not shown then self:Render({}) end
+	if not shown then self:Render(EMPTY, 0) end
 end
 
--- entries carry unit-circle coordinates, so the radar stays independent of its radius
-function Radar:Render(entries)
+-- Entries carry unit-circle coordinates, so the radar stays independent of its radius.
+-- count, not the table length: the caller keeps its entry tables pooled past it.
+function Radar:Render(entries, count)
 	local now = GetTime()
 	wipe(active)
 
-	for _, entry in ipairs(entries) do
+	for index = 1, count do
+		local entry = entries[index]
 		local pin = pins[entry.key]
 		if not pin then
 			pin = acquirePin()

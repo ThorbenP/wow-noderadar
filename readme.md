@@ -25,10 +25,11 @@ Import once after installing: `/gathermate` → *Import* → tick *Mining* and
 
 **An active tracking ability** — *Find Minerals* or *Find Herbs*. Starting the radar
 without one prints a warning, since the radar would otherwise stay empty for no
-visible reason. The client draws
-minimap blips only for the tracking type that is currently active, and Burning
-Crusade allows exactly one at a time. NodeRadar can only confirm what the client
-is willing to draw.
+visible reason. The client draws minimap blips only for the tracking type that is
+currently active, and Burning Crusade allows exactly one at a time. NodeRadar can
+only confirm what the client is willing to draw, so only that type's spawn points
+become candidates: with *Find Minerals* up no herb point is ever aimed at, and with
+no tracking at all a pass takes no sample and the radar stays empty.
 
 ### Why GatherMate2 cannot be optional
 
@@ -54,7 +55,11 @@ CurseForge app.
 |---|---|
 | `/nr` | start and stop the radar |
 | `/nr options` | open the settings |
-| `/nr debug` | write a diagnostic snapshot into the SavedVariables |
+| `/nr debug` | take a diagnostic snapshot and open it in a copyable window |
+| `/nr sweep [step]` | raster the whole scan range and report every blip found, against the database |
+| `/nr minimap` | list which minimap textures this client exposes, and visible child frames |
+| `/nr settle <n>` | frames to wait between moving the minimap and reading it |
+| `/nr clear` | drop the stored snapshots, measurements and counters |
 
 A small draggable control window with a start/stop button and a settings button is
 shown by default; it can be turned off in the options.
@@ -71,7 +76,8 @@ highlight when a node first appears.
 **Radar** — radius (100–400 px), grid opacity (5–100 %), and whether the range rings
 and axes are drawn at all.
 
-**Scanning** — seconds between scans (0.5–10 s), and whether scanning pauses while
+**Scanning** — how often a node already found is rechecked (0.5–10 s), and whether
+scanning pauses while
 you are in combat. Scanning always pauses while you are dead. Pausing is off by default: scanning works in a fight, it just
 takes the minimap and the mouse focus while a pass runs.
 
@@ -110,11 +116,21 @@ Two details fall out of that design:
   each node named in the resulting tooltip claims the candidate it fits.
 - **The tooltip outranks the database.** If the database expects copper where tin
   has spawned, the radar shows tin.
+- **A candidate is asked only when something can have changed for it.** There is no
+  scan interval. Four times a second the addon works out which candidates are due: a
+  spot never asked about, a node already found whose recheck is up (that recheck is
+  what notices it being gathered), or a spot that read empty and has since either sat
+  out its 15-second cooldown or come 15 yards closer — closer matters because the
+  client's blip range is an assumption taken from GatherMate's setting. Only those go
+  into the pass, rechecks first, so a node on the radar is never crowded out by a spot
+  that read empty. Standing still among candidates already read therefore costs no
+  samples at all, and two seconds of quiet follow every pass so that riding into a
+  dense area cannot hold the minimap under the cursor continuously.
 
 ### What the scan hides while it runs
 
-Everything: the map image via alpha, the tracking blips and the player arrow via a
-transparent texture, the tooltip via its alpha, and mouse clicks via
+Everything: the map image via alpha, the tracking blips, the player arrow and party
+blips via a transparent texture, the tooltip via its alpha, and mouse clicks via
 `SetMouseClickEnabled(false)` so the minimap's context menu cannot open under your
 cursor. Addon pins on the minimap — GatherMate2's own icons, Questie's — have their
 mouse interaction switched off for the duration, because their tooltips sit exactly
@@ -124,12 +140,14 @@ Everything is restored when the pass ends.
 ## Limitations
 
 - **No scanning while you are dead**, or while a spell is waiting for a target.
-- **No scanning while you turn the camera.** During mouselook the client resolves no
-  mouse focus at all, so no tooltip appears — measured: 22 samples produced 0
-  tooltips against a 24% baseline. A right click on a target enters mouselook only
-  briefly and is not counted. Instead of dropping the display, hit expiry pauses
+- **No scanning while a mouse button is held.** A held button binds the client's mouse
+  focus, so the minimap gets no hover and no tooltip appears. During mouselook —
+  either button — the client resolves no focus at all: measured, 22 samples produced 0
+  tooltips against a 24% baseline. A button held on a frame, dragging a slider or a
+  window, keeps that frame focused instead. Clicking a target or a node is over in a
+  moment and is not counted. Instead of dropping the display, hit expiry pauses
   while scanning is impossible, so the radar keeps showing what it last confirmed
-  until you let go. The interval keeps running through the pause, so a pass starts
+  until you let go. Nothing is asked again while the pause lasts, so a pass starts
   the moment scanning is possible again if the pause outlasted what was left of it.
 - **Only nodes the database knows about.** A spawn point missing from
   GatherMate2's data is never aimed at and therefore never confirmed.
@@ -137,17 +155,25 @@ Everything is restored when the pass ends.
   addon one.
 - **A node closer than five yards is not drawn.** You are standing on it; its icon
   would sit under the player marker and tell you nothing.
-- **A harvested node lingers** for the scan interval plus 1.5 seconds, until the
+- **A harvested node lingers** for the recheck interval plus 2 seconds, until the
   missing confirmation lets it expire.
 - **The minimap disappears briefly** during each pass — one frame per sample.
 
 ## Reporting a bug
 
-Run `/nr debug`, then `/reload`, and attach
-`WTF/Account/<account>/SavedVariables/NodeRadar.lua` to the issue. It records the
-scan geometry, the candidate list with distances and confirmation state, the
-cluster sizes, and a rolling log of distinct tooltips with the reason each one was
-accepted or rejected.
+Run `/nr debug`. A window opens with the whole snapshot selected — Ctrl+C copies it
+straight into the issue, no reload needed, which matters because most of what it
+records is gone the moment the client reloads.
+
+It carries the scan geometry and spacing constants, the candidate list with distance,
+probe count, confirmation state and which probe ring answered, the cluster sizes, a
+rolling log of distinct tooltips, every confirmation with the sample point that earned
+it, tooltips that another frame took, nodes that appeared to be drawn twice, and any
+blip measurement taken so far.
+
+The same snapshots are also kept in
+`WTF/Account/<account>/SavedVariables/NodeRadar.lua` — the last six, written on reload
+or logout.
 
 ## Licence
 

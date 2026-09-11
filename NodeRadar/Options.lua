@@ -137,10 +137,10 @@ local function buildWindow()
 		function(value) db.showGrid = value NR.Radar:ShowGrid(value) end))
 
 	section(settings, "Scanning", -324, 424)
-	add(slider(settings, "Seconds between scans", 0.5, 10, 0.5, "%.1f s", LEFT + 4, -356,
+	add(slider(settings, "Recheck a found node every", 0.5, 10, 0.5, "%.1f s", LEFT + 4, -356,
 		SLIDER_WIDTH,
-		function() return db.scanInterval end,
-		function(value) db.scanInterval = value end))
+		function() return db.recheckSeconds end,
+		function(value) db.recheckSeconds = value end))
 	add(checkbox(settings, "Pause while in combat", RIGHT, -354,
 		function() return db.pauseInCombat end,
 		function(value) db.pauseInCombat = value NR.Scanner.pauseInCombat = value end))

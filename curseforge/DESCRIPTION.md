@@ -32,12 +32,15 @@ entirely optional, the addon stays free either way.
   your view. Radius, icon size and grid are configurable.
 - **Live tracking between scans** — node positions are held in world coordinates, so
   the icons move and rotate smoothly as you ride, independent of the scan rate.
-- **Stays out of your way** — during a scan the minimap image, blips, player arrow
-  and tooltip are all suppressed, and minimap clicks are disabled so no context menu
-  can open under your cursor.
-- **Ignores database pins** — GatherMate2's and Questie's own minimap icons are
-  excluded from the measurement, so a "possible" node is never mistaken for a real
-  one.
+- **Stays out of your way** — during a scan the minimap image, tracking blips, player
+  arrow, party blips and tooltip are all suppressed, and minimap clicks are disabled
+  so no context menu can open under your cursor. Pins drawn by other addons go with
+  them, including ones that opt out of being hidden.
+- **Ignores database pins** — the minimap icons of GatherMate2, Questie and anything
+  else are excluded from the measurement, so a "possible" node is never mistaken for
+  a real one.
+- **Correct indoors** — caves and buildings use a different minimap scale, and the
+  radar follows it instead of measuring everything a third too close.
 - **Nodes sharing a spot cost one sample** — the tooltip lists everything under the
   cursor, so candidates a few pixels apart are checked together, and the tooltip
   decides which of them are actually there. Where the database expects copper and
@@ -53,7 +56,8 @@ imported.** Both parts are mandatory. Install it, then run `/gathermate` → *Im
 
 **An active tracking ability** — *Find Minerals* or *Find Herbs*. The client draws
 blips only for the tracking type that is active, and Burning Crusade allows one at
-a time. NodeRadar can confirm only what the client draws.
+a time. NodeRadar can confirm only what the client draws, so only that type's spawn
+points are aimed at — and with no tracking up, nothing is scanned at all.
 
 ### Why the dependency is not optional
 
@@ -66,16 +70,20 @@ your radar as an ore vein.
 
 ## Honest limitations
 
-- **No scanning while you hold the right mouse button.** During mouselook the client
-  resolves no mouse focus, so no tooltip appears and no node can be confirmed.
-  Rather than clearing the display, the radar freezes what it last confirmed until
-  you let go.
+- **No scanning while you hold a mouse button.** A held button binds the client's
+  mouse focus — turning the camera, or dragging a window — so no tooltip appears and
+  no node can be confirmed. Rather than clearing the display, the radar holds what it
+  last confirmed until you let go, up to thirty seconds.
 - **Only nodes the database knows about.** A spawn point missing from GatherMate2's
   data is never aimed at and therefore never confirmed.
 - **The minimap blinks.** Confirming a node means putting the minimap under your
   cursor for one frame per sample. With a handful of candidates that is a few frames
   every few seconds — invisible in practice, but it is there.
-- **A harvested node lingers** for the scan interval plus 1.5 seconds before the
+- **Targeted scans, no interval.** A spawn point new to the range is asked about at
+  once and keeps priority for the next few seconds, since the client draws a blip at
+  its own pace. What a pass can carry is capped, and the longest-unasked spot goes
+  first, so the rate per spot falls by itself as more of them compete.
+- **A harvested node lingers** for the recheck interval plus 2 seconds before the
   missing confirmation expires it.
 
 ## How it works
