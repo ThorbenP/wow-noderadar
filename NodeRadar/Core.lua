@@ -1281,7 +1281,7 @@ end)
 local MINIMAP_TEXTURE_CALLS = {
 	"SetBlipTexture", "SetClassBlipTexture", "SetPlayerTexture",
 	"SetPOIArrowTexture", "SetStaticPOIArrowTexture", "SetCorpsePOIArrowTexture",
-	"SetIconTexture", "UpdateBlips",
+	"SetIconTexture", "GetIconTexture", "UpdateBlips",
 	"GetBlipTexture", "GetClassBlipTexture", "GetPlayerTexture",
 	"GetPOIArrowTexture", "GetStaticPOIArrowTexture", "GetCorpsePOIArrowTexture",
 }

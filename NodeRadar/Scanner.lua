@@ -12,6 +12,8 @@ local ARROW_DEFAULT = "Interface\\Minimap\\MinimapArrow"
 local CLASS_BLIP_DEFAULT = "Interface\\Minimap\\PartyRaidBlips"
 -- the edge arrows for quest points, tracked locations and your own corpse share one
 local POI_ARROW_DEFAULT = "Interface\\Minimap\\ROTATING-MINIMAPGUIDEARROW"
+-- the icons the client places on the map itself, mail and meeting stones among them
+local POI_ICON_DEFAULT = "Interface\\Minimap\\POIIcons"
 
 -- Everything the client draws on the minimap outside the frame hierarchy, so alpha
 -- does not reach it and each needs its own texture swapped for a blank one. The
@@ -27,6 +29,7 @@ local MINIMAP_TEXTURES = {
 		fallback = POI_ARROW_DEFAULT },
 	{ set = "SetCorpsePOIArrowTexture", get = "GetCorpsePOIArrowTexture",
 		fallback = POI_ARROW_DEFAULT },
+	{ set = "SetIconTexture", get = "GetIconTexture", fallback = POI_ICON_DEFAULT },
 }
 -- how far down the minimap's frame tree pins are looked for
 local CHILD_DEPTH = 4
