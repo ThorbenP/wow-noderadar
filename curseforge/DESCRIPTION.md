@@ -32,10 +32,11 @@ entirely optional, the addon stays free either way.
   your view. Radius, icon size and grid are configurable.
 - **Live tracking between scans** — node positions are held in world coordinates, so
   the icons move and rotate smoothly as you ride, independent of the scan rate.
-- **Stays out of your way** — during a scan the minimap image, tracking blips, player
-  arrow, party blips and tooltip are all suppressed, and minimap clicks are disabled
-  so no context menu can open under your cursor. Pins drawn by other addons go with
-  them, including ones that opt out of being hidden.
+- **Stays out of your way** — during a scan the map image, tracking blips, your
+  arrow, the quest and corpse arrows, target and focus markers and every addon pin are
+  hidden, including pins that opt out of being hidden and markers anchored beside the
+  minimap rather than inside it. Minimap clicks are disabled too, so no context menu
+  can open under your cursor.
 - **Ignores database pins** — the minimap icons of GatherMate2, Questie and anything
   else are excluded from the measurement, so a "possible" node is never mistaken for
   a real one.
@@ -78,7 +79,9 @@ your radar as an ore vein.
   data is never aimed at and therefore never confirmed.
 - **The minimap blinks.** Confirming a node means putting the minimap under your
   cursor for one frame per sample. With a handful of candidates that is a few frames
-  every few seconds — invisible in practice, but it is there.
+  every few seconds — barely visible, but it is there. Party and raid blips stay on
+  screen while it happens: the client draws them outside the frame hierarchy and
+  offers no way to suppress them.
 - **Targeted scans, no interval.** A spawn point new to the range is asked about at
   once and keeps priority for the next few seconds, since the client draws a blip at
   its own pace. What a pass can carry is capped, and the longest-unasked spot goes

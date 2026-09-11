@@ -10,6 +10,8 @@ local BLIP_DEFAULT = "Interface\\Minimap\\ObjectIconsAtlas"
 local ARROW_DEFAULT = "Interface\\Minimap\\MinimapArrow"
 -- party and raid members are drawn from their own sheet, not the tracking atlas
 local CLASS_BLIP_DEFAULT = "Interface\\Minimap\\PartyRaidBlips"
+-- the edge arrows for quest points, tracked locations and your own corpse share one
+local POI_ARROW_DEFAULT = "Interface\\Minimap\\ROTATING-MINIMAPGUIDEARROW"
 
 -- Everything the client draws on the minimap outside the frame hierarchy, so alpha
 -- does not reach it and each needs its own texture swapped for a blank one. The
@@ -20,9 +22,11 @@ local MINIMAP_TEXTURES = {
 	{ set = "SetBlipTexture", get = "GetBlipTexture", fallback = BLIP_DEFAULT },
 	{ set = "SetPlayerTexture", get = "GetPlayerTexture", fallback = ARROW_DEFAULT },
 	{ set = "SetClassBlipTexture", get = "GetClassBlipTexture", fallback = CLASS_BLIP_DEFAULT },
-	{ set = "SetPOIArrowTexture", get = "GetPOIArrowTexture" },
-	{ set = "SetStaticPOIArrowTexture", get = "GetStaticPOIArrowTexture" },
-	{ set = "SetCorpsePOIArrowTexture", get = "GetCorpsePOIArrowTexture" },
+	{ set = "SetPOIArrowTexture", get = "GetPOIArrowTexture", fallback = POI_ARROW_DEFAULT },
+	{ set = "SetStaticPOIArrowTexture", get = "GetStaticPOIArrowTexture",
+		fallback = POI_ARROW_DEFAULT },
+	{ set = "SetCorpsePOIArrowTexture", get = "GetCorpsePOIArrowTexture",
+		fallback = POI_ARROW_DEFAULT },
 }
 -- how far down the minimap's frame tree pins are looked for
 local CHILD_DEPTH = 4
@@ -30,10 +34,11 @@ local CHILD_DEPTH = 4
 local MUTED_SCRIPTS = { "OnMouseDown", "OnMouseUp", "OnMouseWheel" }
 
 -- Frames between moving the minimap and reading the tooltip, during which the position
--- is re-asserted. Waiting alone changes nothing, measured identical at 0, 2 and 10
--- frames; re-asserting helped in one reading out of two, which is not enough to pay
--- two frames for. One frame keeps the re-assert at half the cost.
-local SETTLE_FRAMES = 1
+-- is re-asserted. Every frame here halves the sampling rate. Waiting alone changes
+-- nothing - measured identical at 0, 2 and 10 frames - and the re-assert helped in one
+-- reading out of two, which does not carry that cost. Adjustable for measuring, zero
+-- until a reading says otherwise.
+local SETTLE_FRAMES = 0
 Scanner.settleFrames = SETTLE_FRAMES
 
 -- diagnostics: the settling time is the one number that separates "the client needs
@@ -178,6 +183,81 @@ local function hideChildren(frame, depth)
 	end
 end
 
+-- Alpha multiplies down the frame tree unless a frame opts out, so this is what the
+-- eye actually gets rather than what any single SetAlpha says.
+local function effectiveAlpha(region)
+	local alpha = region:GetAlpha()
+	local frame = region
+	while frame do
+		if frame.IsIgnoringParentAlpha and frame:IsIgnoringParentAlpha() then break end
+		local parent = frame:GetParent()
+		if not parent then break end
+		alpha = alpha * parent:GetAlpha()
+		frame = parent
+	end
+	return alpha
+end
+
+-- Diagnostics: what is still on screen once a pass has hidden everything it can reach.
+-- Anything listed here is a frame this addon failed to hide and could learn to; an
+-- empty list means whatever stays visible is drawn by the client outside the frame
+-- tree, where no API reaches it either. Taken once per pass, not per sample.
+local function surveyVisible()
+	local found = {}
+
+	local function walk(frame, origin, depth)
+		if depth > CHILD_DEPTH then return end
+		for _, child in ipairs({ frame:GetChildren() }) do
+			if child:IsShown() then
+				local alpha = effectiveAlpha(child)
+				if alpha > 0.05 then
+					found[#found + 1] = string.format("%s: %s alpha=%.2f%s", origin,
+						(child.GetName and child:GetName()) or "unnamed frame", alpha,
+						(child.IsIgnoringParentAlpha and child:IsIgnoringParentAlpha())
+							and " ignoresParentAlpha" or "")
+				end
+				walk(child, origin, depth + 1)
+			end
+		end
+
+		for _, region in ipairs({ frame:GetRegions() }) do
+			if region:IsShown() and region.GetAlpha then
+				local alpha = effectiveAlpha(region)
+				if alpha > 0.05 then
+					found[#found + 1] = string.format("%s: %s (texture) alpha=%.2f", origin,
+						(region.GetName and region:GetName()) or "unnamed", alpha)
+				end
+			end
+		end
+	end
+
+	walk(Minimap, "minimap", 1)
+	if MinimapCluster then walk(MinimapCluster, "cluster", 1) end
+	Scanner.visibleDuringScan = found
+end
+
+-- A marker anchored to the cluster beside the minimap is not covered by the minimap's
+-- own alpha, so it is dimmed directly and put back afterwards. The minimap itself and
+-- everything it hangs from are left alone - dimming those would hide the very thing
+-- the pass is reading.
+local function dimClusterSiblings()
+	if not MinimapCluster then return end
+
+	local protected = {}
+	local frame = Minimap
+	while frame do
+		protected[frame] = true
+		frame = frame:GetParent()
+	end
+
+	for _, child in ipairs({ MinimapCluster:GetChildren() }) do
+		if not protected[child] and child:IsShown() and child:GetAlpha() > 0 then
+			held.dimmed[#held.dimmed + 1] = { frame = child, alpha = child:GetAlpha() }
+			child:SetAlpha(0)
+		end
+	end
+end
+
 local function hold()
 	if held then return true end
 	if Minimap:GetNumPoints() == 0 then return false end
@@ -203,8 +283,9 @@ local function hold()
 		end
 	end
 
-	held.mouseChildren, held.alphaChildren = {}, {}
+	held.mouseChildren, held.alphaChildren, held.dimmed = {}, {}, {}
 	hideChildren(Minimap, 1)
+	dimClusterSiblings()
 
 	-- alpha hides the map image and everything under it in the frame tree; what the
 	-- client draws on top has to be blanked one texture at a time
@@ -217,6 +298,7 @@ local function hold()
 		Minimap[texture.set](Minimap, BLANK)
 	end
 	refreshBlips()
+	surveyVisible()
 	return true
 end
 
@@ -242,6 +324,9 @@ local function release()
 	end
 	for _, child in ipairs(held.alphaChildren) do
 		child:SetIgnoreParentAlpha(true)
+	end
+	for _, entry in ipairs(held.dimmed) do
+		entry.frame:SetAlpha(entry.alpha)
 	end
 
 	for setter, value in pairs(held.textures) do

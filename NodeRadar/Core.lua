@@ -836,7 +836,7 @@ local function sweepReport()
 		table.remove(NodeRadarDB.sweep, 1)
 	end
 
-	for _, line in ipairs(lines) do out(line) end
+	NR.Dump:Show(table.concat(lines, "\n"), "NodeRadar - sweep")
 end
 
 local function sweepDone(completed)
@@ -1301,29 +1301,46 @@ local function reportMinimap()
 		end
 	end
 
+	-- Both trees: hiding the minimap reaches its own children, but a marker anchored
+	-- to the cluster beside it is left standing, and telling them apart is the whole
+	-- point of asking.
 	local children = {}
-	for _, child in ipairs({ Minimap:GetChildren() }) do
-		if child:IsShown() then
-			local flags = ""
-			if child.IsMouseEnabled and child:IsMouseEnabled() then flags = flags .. " mouse" end
-			if child.IsIgnoringParentAlpha and child:IsIgnoringParentAlpha() then
-				flags = flags .. " ignoresParentAlpha"
+	local function list(frame, origin)
+		for _, child in ipairs({ frame:GetChildren() }) do
+			if child:IsShown() then
+				local flags = ""
+				if child.IsMouseEnabled and child:IsMouseEnabled() then
+					flags = flags .. " mouse"
+				end
+				if child.IsIgnoringParentAlpha and child:IsIgnoringParentAlpha() then
+					flags = flags .. " ignoresParentAlpha"
+				end
+				children[#children + 1] = origin .. ": "
+					.. ((child.GetName and child:GetName()) or "unnamed") .. flags
 			end
-			children[#children + 1] = ((child.GetName and child:GetName()) or "unnamed")
-				.. flags
 		end
 	end
 
-	NodeRadarDB.minimap = {
+	list(Minimap, "minimap")
+	if MinimapCluster then list(MinimapCluster, "cluster") end
+
+	local report = {
 		takenAt = date("%Y-%m-%d %H:%M:%S"),
 		available = available,
 		missing = missing,
 		shownChildren = children,
 	}
-	out("minimap: " .. #available .. " calls available, " .. #missing .. " missing, "
-		.. #children .. " visible child frames - stored for /nr debug")
-	for _, name in ipairs(missing) do out("  missing: " .. name) end
-	for _, entry in ipairs(children) do out("  child: " .. entry) end
+	NodeRadarDB.minimap = report
+	local lines = { string.format("NodeRadar minimap probe %s", report.takenAt) }
+	lines[#lines + 1] = "available: " .. table.concat(available, " ")
+	lines[#lines + 1] = "missing: "
+		.. (#missing > 0 and table.concat(missing, " ") or "none")
+	lines[#lines + 1] = ""
+	lines[#lines + 1] = string.format("visible child frames (%d):", #children)
+	for _, entry in ipairs(children) do
+		lines[#lines + 1] = "  " .. entry
+	end
+	NR.Dump:Show(table.concat(lines, "\n"), "NodeRadar - minimap probe")
 end
 
 -- The snapshot is built as text, which is what both consumers want: the window hands
@@ -1371,6 +1388,18 @@ local function snapshotLines()
 		diag.samples, diag.tooltips, diag.matched, diag.probeRejected)
 	append(lines, "rings: %s", countedList(diag.ringHits))
 	append(lines, "tooltips taken by other frames: %s", countedList(diag.stolen))
+
+	local visible = Scanner.visibleDuringScan
+	if visible and #visible > 0 then
+		append(lines, "")
+		append(lines, "still visible during the last pass (%d):", #visible)
+		for _, entry in ipairs(visible) do
+			append(lines, "  %s", entry)
+		end
+	elseif visible then
+		append(lines, "still visible during the last pass: no frame - anything left on "
+			.. "screen is drawn by the client outside the frame tree")
+	end
 
 	local shown = {}
 	for key, hit in pairs(hits) do
