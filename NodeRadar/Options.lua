@@ -90,7 +90,7 @@ local SLIDER_WIDTH = 170
 
 local function buildWindow()
 	settings = CreateFrame("Frame", "NodeRadarSettingsFrame", UIParent)
-	settings:SetSize(460, 550)
+	settings:SetSize(460, 580)
 	settings:SetPoint("CENTER")
 	settings:SetFrameStrata("DIALOG")
 	settings:SetMovable(true)
@@ -173,6 +173,9 @@ local function buildWindow()
 	add(checkbox(settings, "Start automatically on login", RIGHT, -472,
 		function() return db.autoStart end,
 		function(value) db.autoStart = value end))
+	add(checkbox(settings, "Hide the radar in combat", LEFT, -502,
+		function() return db.hideInCombat end,
+		function(value) db.hideInCombat = value end))
 
 	local reset = CreateFrame("Button", nil, settings, "UIPanelButtonTemplate")
 	reset:SetSize(150, 24)

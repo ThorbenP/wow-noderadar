@@ -42,6 +42,7 @@ local defaults = {
 	showGrid = false,
 	showWindow = true,
 	autoStart = false,
+	hideInCombat = true,
 	playSound = true,
 	skillTooltip = true,
 	hideTrivial = false,
@@ -320,6 +321,10 @@ driver:SetScript("OnUpdate", function(_, elapsed)
 	if not pauseReason and now - lastSweepAt >= SWEEP_INTERVAL then
 		sweepNow(now)
 	end
+
+	local hidden = db.hideInCombat and UnitAffectingCombat("player")
+	Radar:SetShown(not hidden)
+	if hidden then return end
 
 	if not playerEast then
 		if shownCount > 0 then

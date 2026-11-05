@@ -49,7 +49,7 @@ Open them with `/nr options`, the gear button in the NodeRadar window, or
 - **Which nodes** — hide nodes beyond your skill or without a skill-up, choose herbs
   and ores
 - **Hints** — highlight and sound for new nodes, red icons, skill in the tooltip
-- **General** — the NodeRadar window, start on login
+- **General** — the NodeRadar window, start on login, hide in combat
 
 ## FAQ
 
