@@ -3,496 +3,308 @@ local ADDON, NR = ...
 local Scanner = {}
 NR.Scanner = Scanner
 
-local BLANK = "Interface\\AddOns\\NodeRadar\\Blank.tga"
--- every blip shares one atlas texture; this is the modern layout, the pre-8.0 set
--- was Interface\Minimap\ObjectIcons and its cells do not line up with it
-local BLIP_DEFAULT = "Interface\\Minimap\\ObjectIconsAtlas"
-local ARROW_DEFAULT = "Interface\\Minimap\\MinimapArrow"
--- party and raid members are drawn from their own sheet, not the tracking atlas
-local CLASS_BLIP_DEFAULT = "Interface\\Minimap\\PartyRaidBlips"
--- the edge arrows for quest points, tracked locations and your own corpse share one
-local POI_ARROW_DEFAULT = "Interface\\Minimap\\ROTATING-MINIMAPGUIDEARROW"
--- the icons the client places on the map itself, mail and meeting stones among them
-local POI_ICON_DEFAULT = "Interface\\Minimap\\POIIcons"
+-- Measured on Forever 1.60.1.70450: Minimap:UpdateMouseoverAtPoint takes a point in
+-- GetCursorPosition's space and moves the minimap's mouseover there within the same
+-- frame; with SetUsingSoftCursor(true) it counts wherever the real cursor is, and
+-- C_TooltipInfo.GetMinimapMouseover() then names every blip under that point. A
+-- whole-map sweep reads synchronously in a few milliseconds and never touches the
+-- minimap's position, alpha or the player's own hover.
 
--- Everything the client draws on the minimap outside the frame hierarchy, so alpha
--- does not reach it and each needs its own texture swapped for a blank one. The
--- current value is read back where a getter exists rather than assumed: restoring a
--- guessed path would leave that arrow broken until the next reload. Where there is no
--- getter, only a default this addon is sure of makes the element eligible at all.
-local MINIMAP_TEXTURES = {
-	{ set = "SetBlipTexture", get = "GetBlipTexture", fallback = BLIP_DEFAULT },
-	{ set = "SetPlayerTexture", get = "GetPlayerTexture", fallback = ARROW_DEFAULT },
-	{ set = "SetClassBlipTexture", get = "GetClassBlipTexture", fallback = CLASS_BLIP_DEFAULT },
-	{ set = "SetPOIArrowTexture", get = "GetPOIArrowTexture", fallback = POI_ARROW_DEFAULT },
-	{ set = "SetStaticPOIArrowTexture", get = "GetStaticPOIArrowTexture",
-		fallback = POI_ARROW_DEFAULT },
-	{ set = "SetCorpsePOIArrowTexture", get = "GetCorpsePOIArrowTexture",
-		fallback = POI_ARROW_DEFAULT },
-	{ set = "SetIconTexture", get = "GetIconTexture", fallback = POI_ICON_DEFAULT },
-}
--- how far down the minimap's frame tree pins are looked for
-local CHILD_DEPTH = 4
--- fallback for clients without SetMouseClickEnabled
-local MUTED_SCRIPTS = { "OnMouseDown", "OnMouseUp", "OnMouseWheel" }
+-- A gathering node's hit area is a square of fixed size on screen, whatever the
+-- minimap's width or zoom: measured 25 units at scale 0.640 and 22.5 units at 0.704.
+local NODE_PX = 16
+-- The rest scale with it, as fractions of one node's square: the grid step never
+-- passes over one, the slack absorbs the drift between the player's position and the
+-- minimap within a frame, and an edge is walked in strides then halved three times.
+local STEP_SHARE = 0.56
+local NODE_SLACK_SHARE = 0.12
+local CLAIM_SLACK_SHARE = 0.16
+local STRIDE_SHARE = 0.16
+local HALVINGS = 3
+-- nodes measured out of one patch of touching cells before the rest is left alone
+local PER_PATCH = 4
 
--- Frames between moving the minimap and reading the tooltip, during which the position
--- is re-asserted. Every frame here halves the sampling rate. Waiting alone changes
--- nothing - measured identical at 0, 2 and 10 frames - and the re-assert helped in one
--- reading out of two, which does not carry that cost. Adjustable for measuring, zero
--- until a reading says otherwise.
-local SETTLE_FRAMES = 0
-Scanner.settleFrames = SETTLE_FRAMES
+local function isSecret(value)
+	return issecretvalue ~= nil and issecretvalue(value)
+end
+NR.IsSecret = isSecret
 
--- diagnostics: the settling time is the one number that separates "the client needs
--- time" from "the client needs an event", so it has to be changeable while playing
-function Scanner:SetSettleFrames(frames)
-	SETTLE_FRAMES = frames
-	self.settleFrames = frames
+Scanner.available = type(Minimap.UpdateMouseoverAtPoint) == "function"
+	and type(Minimap.SetUsingSoftCursor) == "function"
+	and C_TooltipInfo ~= nil and type(C_TooltipInfo.GetMinimapMouseover) == "function"
+
+-- The client prefixes a node above or below the player with a height arrow texture
+-- and colours quest lines; a node has to read the same name either way.
+function Scanner.Plain(text)
+	text = text:gsub("|T.-|t", ""):gsub("|A.-|a", ""):gsub("|H.-|h(.-)|h", "%1")
+	text = text:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", ""):gsub("|n", " ")
+	return strtrim(text)
 end
 
-local queue, cursor = {}, 1
-local held
-local settle = 0
--- the point waiting for its tooltip, kept as plain locals: one table per sample point
--- is one allocation per frame for the whole pass
-local sampleX, sampleY, samplePayload, sampling
--- the handlers of the pass being run, so a caller reads its own samples and hears when
--- the pass ends - a dropped pass is silent otherwise
-local onSample, onDone
-local driver = CreateFrame("Frame")
-driver:Hide()
+local geometry
+local reads = 0
+-- this sweep's sizes in map units, from the minimap's scale
+local node, step, nodeSlack, claimSlack, stride, reach
 
-Scanner.canSplitMouse = type(Minimap.SetMouseClickEnabled) == "function"
-	and type(Minimap.SetMouseMotionEnabled) == "function"
-Scanner.canHideBlips = type(Minimap.SetBlipTexture) == "function"
-Scanner.pauseInCombat = false
-Scanner.canHideArrow = type(Minimap.SetPlayerTexture) == "function"
-Scanner.canHideClassBlips = type(Minimap.SetClassBlipTexture) == "function"
-
--- which of the drawn-on-top elements this client lets us blank and put back
-local hideableTextures = {}
-for _, texture in ipairs(MINIMAP_TEXTURES) do
-	if type(Minimap[texture.set]) == "function"
-		and (type(Minimap[texture.get]) == "function" or texture.fallback) then
-		hideableTextures[#hideableTextures + 1] = texture
+-- Every name under a point. A secret answer means the client is withholding the
+-- minimap right now, so it aborts the whole sweep rather than reading as empty.
+local function namesAt(x, y)
+	reads = reads + 1
+	Minimap:UpdateMouseoverAtPoint((geometry.cx + x) * geometry.scale,
+		(geometry.cy + y) * geometry.scale)
+	local data = C_TooltipInfo.GetMinimapMouseover()
+	if data == nil then return nil end
+	if isSecret(data) or type(data) ~= "table" or isSecret(data.lines) then
+		error("the minimap mouseover reads secret", 0)
 	end
-end
-Scanner.hideableTextureCount = #hideableTextures
-Scanner.canUpdateBlips = type(Minimap.UpdateBlips) == "function"
+	if type(data.lines) ~= "table" then return nil end
 
--- The client resets the tooltip's alpha when it shows it, so hiding it once is not
--- enough; this fires at the moment of showing, before the frame is drawn.
-GameTooltip:HookScript("OnShow", function(self)
-	if held then self:SetAlpha(0) end
-end)
-
--- swapping the texture alone leaves the already drawn blips on screen until the
--- client's next internal blip update, which shows up as a one-frame flash
-local function refreshBlips()
-	if Minimap.UpdateBlips then Minimap:UpdateBlips() end
-end
-
--- GatherMate re-enables the mouse on its pins on every minimap update, so switching
--- it off for the duration of a pass does not hold. The tooltip's owner does: the
--- client owns a blip tooltip through the minimap, an addon pin owns its own.
-local function ownerIsMinimap()
-	local owner = GameTooltip:GetOwner()
-	return owner == nil or owner == Minimap or owner == UIParent
-end
-
--- a real tracking blip is drawn by the client on the minimap itself, so anything
--- whose tooltip belongs to a frame on top of it is an addon pin, not a node
-local function focusIsMinimap()
-	if GetMouseFoci then
-		local foci = GetMouseFoci()
-		return not foci or not foci[1] or foci[1] == Minimap
-	end
-	if GetMouseFocus then
-		local focus = GetMouseFocus()
-		return not focus or focus == Minimap
-	end
-	return true
-end
-
--- the minimap tooltip lists everything under the cursor, so every line matters:
--- a node can sit below a vendor or another blip
--- names whatever is holding the tooltip instead of the minimap, so a pin covering the
--- spot being probed shows up as a count rather than as a sample that read empty
-local function stolenBy()
-	local owner = GameTooltip:GetOwner()
-	if owner and owner ~= Minimap and owner ~= UIParent then
-		return (owner.GetName and owner:GetName()) or "unnamed frame"
-	end
-	local focus = GetMouseFoci and GetMouseFoci() or nil
-	focus = focus and focus[1] or (GetMouseFocus and GetMouseFocus())
-	if focus and focus ~= Minimap then
-		return (focus.GetName and focus:GetName()) or "unnamed frame"
-	end
-	return "unknown"
-end
-
--- Returns the tooltip text, or nil plus the frame that took it: a tooltip owned by an
--- addon pin is not proof of a node, but it is not "nothing there" either.
-local function tooltipText()
-	if not GameTooltip:IsShown() then return nil end
-	if not ownerIsMinimap() or not focusIsMinimap() then return nil, stolenBy() end
-
-	local lines
-	for index = 1, GameTooltip:NumLines() do
-		local left = _G["GameTooltipTextLeft" .. index]
-		local text = left and left:GetText()
-		if text and text ~= "" then
-			lines = lines and (lines .. "\n" .. text) or text
-		end
-	end
-	return lines
-end
-
--- The client resolves mouse focus once per frame, so the minimap has to be
--- dragged under the cursor one sample point at a time.
--- Addon pins are mouse-enabled child frames sitting exactly where a node is only
--- *expected*, so their tooltips would read as confirmed nodes and they leave the hit
--- test for the pass. A frame may also opt out of inherited alpha, which is how a pin
--- stays visible on a hidden minimap; clearing that covers pins from addons this one
--- has never heard of, which is the only way to stay ahead of what people install.
-local function hideChildren(frame, depth)
-	if depth > CHILD_DEPTH then return end
-
-	local children = { frame:GetChildren() }
-	for index = 1, #children do
-		local child = children[index]
-		if child and child:IsShown() then
-			if child.IsMouseEnabled and child:IsMouseEnabled() then
-				held.mouseChildren[#held.mouseChildren + 1] = child
-				child:EnableMouse(false)
-			end
-			if child.IsIgnoringParentAlpha and child:IsIgnoringParentAlpha() then
-				held.alphaChildren[#held.alphaChildren + 1] = child
-				child:SetIgnoreParentAlpha(false)
-			end
-			hideChildren(child, depth + 1)
-		end
-	end
-
-	-- textures and font strings carry the same opt-out
-	local regions = { frame:GetRegions() }
-	for index = 1, #regions do
-		local region = regions[index]
-		if region and region.IsIgnoringParentAlpha and region:IsIgnoringParentAlpha() then
-			held.alphaChildren[#held.alphaChildren + 1] = region
-			region:SetIgnoreParentAlpha(false)
-		end
-	end
-end
-
--- Alpha multiplies down the frame tree unless a frame opts out, so this is what the
--- eye actually gets rather than what any single SetAlpha says.
-local function effectiveAlpha(region)
-	local alpha = region:GetAlpha()
-	local frame = region
-	while frame do
-		if frame.IsIgnoringParentAlpha and frame:IsIgnoringParentAlpha() then break end
-		local parent = frame:GetParent()
-		if not parent then break end
-		alpha = alpha * parent:GetAlpha()
-		frame = parent
-	end
-	return alpha
-end
-
--- Diagnostics: what is still on screen once a pass has hidden everything it can reach.
--- Anything listed here is a frame this addon failed to hide and could learn to; an
--- empty list means whatever stays visible is drawn by the client outside the frame
--- tree, where no API reaches it either. Taken once per pass, not per sample.
-local function surveyVisible()
-	local found = {}
-
-	local function walk(frame, origin, depth)
-		if depth > CHILD_DEPTH then return end
-		for _, child in ipairs({ frame:GetChildren() }) do
-			if child:IsShown() then
-				local alpha = effectiveAlpha(child)
-				if alpha > 0.05 then
-					found[#found + 1] = string.format("%s: %s alpha=%.2f%s", origin,
-						(child.GetName and child:GetName()) or "unnamed frame", alpha,
-						(child.IsIgnoringParentAlpha and child:IsIgnoringParentAlpha())
-							and " ignoresParentAlpha" or "")
-				end
-				walk(child, origin, depth + 1)
-			end
-		end
-
-		for _, region in ipairs({ frame:GetRegions() }) do
-			if region:IsShown() and region.GetAlpha then
-				local alpha = effectiveAlpha(region)
-				if alpha > 0.05 then
-					found[#found + 1] = string.format("%s: %s (texture) alpha=%.2f", origin,
-						(region.GetName and region:GetName()) or "unnamed", alpha)
+	local names
+	for _, line in ipairs(data.lines) do
+		local text = type(line) == "table" and line.leftText or nil
+		if isSecret(text) then error("a minimap mouseover line reads secret", 0) end
+		if type(text) == "string" then
+			for row in text:gmatch("[^\n]+") do
+				local name = Scanner.Plain(row)
+				if name ~= "" then
+					names = names or {}
+					names[#names + 1] = name
 				end
 			end
 		end
 	end
-
-	walk(Minimap, "minimap", 1)
-	if MinimapCluster then walk(MinimapCluster, "cluster", 1) end
-	Scanner.visibleDuringScan = found
+	return names
 end
 
--- A marker anchored to the cluster beside the minimap is not covered by the minimap's
--- own alpha, so it is dimmed directly and put back afterwards. The minimap itself and
--- everything it hangs from are left alone - dimming those would hide the very thing
--- the pass is reading.
-local function dimClusterSiblings()
-	if not MinimapCluster then return end
-
-	local protected = {}
-	local frame = Minimap
-	while frame do
-		protected[frame] = true
-		frame = frame:GetParent()
-	end
-
-	for _, child in ipairs({ MinimapCluster:GetChildren() }) do
-		if not protected[child] and child:IsShown() and child:GetAlpha() > 0 then
-			held.dimmed[#held.dimmed + 1] = { frame = child, alpha = child:GetAlpha() }
-			child:SetAlpha(0)
-		end
-	end
-end
-
-local function hold()
-	if held then return true end
-	if Minimap:GetNumPoints() == 0 then return false end
-
-	held = {
-		anchor = { Minimap:GetPoint(1) },
-		alpha = Minimap:GetAlpha(),
-		strata = Minimap:GetFrameStrata(),
-		tooltipAlpha = GameTooltip:GetAlpha(),
-		scripts = {},
-	}
-	GameTooltip:SetAlpha(0)
-
-	-- clicks would open the tracking menu or ping while the minimap sits under the
-	-- cursor; hover has to survive because that is what produces blip tooltips
-	if Scanner.canSplitMouse then
-		Minimap:SetMouseClickEnabled(false)
-		Minimap:SetMouseMotionEnabled(true)
-	else
-		for _, script in ipairs(MUTED_SCRIPTS) do
-			held.scripts[script] = Minimap:GetScript(script)
-			Minimap:SetScript(script, nil)
-		end
-	end
-
-	held.mouseChildren, held.alphaChildren, held.dimmed = {}, {}, {}
-	hideChildren(Minimap, 1)
-	dimClusterSiblings()
-
-	-- alpha hides the map image and everything under it in the frame tree; what the
-	-- client draws on top has to be blanked one texture at a time
-	Minimap:SetAlpha(0)
-	Minimap:SetFrameStrata("TOOLTIP")
-	held.textures = {}
-	for _, texture in ipairs(hideableTextures) do
-		local getter = Minimap[texture.get]
-		held.textures[texture.set] = (getter and getter(Minimap)) or texture.fallback
-		Minimap[texture.set](Minimap, BLANK)
-	end
-	refreshBlips()
-	surveyVisible()
-	return true
-end
-
-local function release()
-	if not held then return end
-
-	Minimap:ClearAllPoints()
-	Minimap:SetPoint(unpack(held.anchor))
-	Minimap:SetAlpha(held.alpha)
-	Minimap:SetFrameStrata(held.strata)
-
-	if Scanner.canSplitMouse then
-		Minimap:SetMouseClickEnabled(true)
-		Minimap:SetMouseMotionEnabled(true)
-	else
-		for script, handler in pairs(held.scripts) do
-			Minimap:SetScript(script, handler)
-		end
-	end
-
-	for _, child in ipairs(held.mouseChildren) do
-		child:EnableMouse(true)
-	end
-	for _, child in ipairs(held.alphaChildren) do
-		child:SetIgnoreParentAlpha(true)
-	end
-	for _, entry in ipairs(held.dimmed) do
-		entry.frame:SetAlpha(entry.alpha)
-	end
-
-	for setter, value in pairs(held.textures) do
-		Minimap[setter](Minimap, value)
-	end
-	refreshBlips()
-
-	local tooltipAlpha = held.tooltipAlpha
-	held = nil
-	GameTooltip:Hide()
-	GameTooltip:SetAlpha(tooltipAlpha)
-end
-
--- A held mouse button binds the client's mouse focus, and a bound focus is what makes
--- scanning impossible - not which button it is. Mouselook, entered by either button,
--- resolves no focus at all: measured, 22 samples produced 0 tooltips against a 24%
--- baseline. A button held on a frame keeps that frame focused however far the minimap
--- is dragged underneath. Both wait past a grace, because clicking a target or a node
--- is a button press as well.
-local CLICK_GRACE = 0.25
-local mouseSince
-
-local function mouseBound()
-	if IsMouselooking and IsMouselooking() then return "turning the camera" end
-	if IsMouseButtonDown and IsMouseButtonDown() then return "a mouse button is held" end
-end
-
--- Combat is a setting rather than a technical limit: scanning works in a fight, it
--- just takes the minimap and the mouse focus while it runs.
-local function blocked()
-	local bound = mouseBound()
-	if bound then
-		mouseSince = mouseSince or GetTime()
-	else
-		mouseSince = nil
-	end
-
-	if UnitIsDeadOrGhost("player") then
-		return true, "dead"
-	end
-	if mouseSince and GetTime() - mouseSince > CLICK_GRACE then
-		return true, bound
-	end
-	if Scanner.pauseInCombat and UnitAffectingCombat("player") then
-		return true, "in combat"
-	end
-	if SpellIsTargeting() then
-		return true, "a spell is waiting for a target"
-	end
-	if not Minimap:IsVisible() then
-		return true, "the minimap is hidden"
+local function readsName(x, y, name)
+	local names = namesAt(x, y)
+	if not names then return false end
+	for _, found in ipairs(names) do
+		if found == name then return true end
 	end
 	return false
 end
 
--- ends the pass and tells its owner whether every point was read
-local function finish(completed)
-	release()
-	queue, cursor, sampling, settle = {}, 1, false, 0
-	driver:Hide()
-
-	local done = onDone
-	onSample, onDone = nil, nil
-	if done then done(completed) end
+-- Distance from (x, y) along (dx, dy) to where the name stops, or nil when it never
+-- stops within reach.
+local function edge(x, y, dx, dy, name)
+	local inside, outside = 0, nil
+	for distance = stride, reach, stride do
+		if not readsName(x + dx * distance, y + dy * distance, name) then
+			outside = distance
+			break
+		end
+		inside = distance
+	end
+	if not outside then return nil end
+	for _ = 1, HALVINGS do
+		local middle = (inside + outside) / 2
+		if readsName(x + dx * middle, y + dy * middle, name) then
+			inside = middle
+		else
+			outside = middle
+		end
+	end
+	return (inside + outside) / 2
 end
 
-driver:SetScript("OnUpdate", function()
+-- Centre of one axis of the square containing the seed. A span wider than one square
+-- is two nodes overlapping; the seed belongs to the one whose edge is nearer.
+local function axisCentre(seed, low, high)
+	local span = low + high
+	if span > node + nodeSlack then
+		if low <= high then return seed - low + node / 2 end
+		return seed + high - node / 2
+	end
+	return seed + (high - low) / 2
+end
+
+local function measure(seed, name)
+	local right = edge(seed.x, seed.y, 1, 0, name)
+	local left = right and edge(seed.x, seed.y, -1, 0, name)
+	local up = left and edge(seed.x, seed.y, 0, 1, name)
+	local down = up and edge(seed.x, seed.y, 0, -1, name)
+	if not down then return nil end
+
+	local x = axisCentre(seed.x, left, right)
+	local y = axisCentre(seed.y, down, up)
+	if not readsName(x, y, name) then return nil end
+	return x, y
+end
+
+local function explains(found, cell)
+	local half = node / 2 + claimSlack
+	return math.abs(found.x - cell.x) <= half and math.abs(found.y - cell.y) <= half
+end
+
+-- Touching cells (eight neighbours) of one name form a patch.
+local function patches(cells)
+	local list, seen = {}, {}
+	for key, cell in pairs(cells) do
+		if not seen[key] then
+			local members, stack = {}, { cell }
+			seen[key] = true
+			while #stack > 0 do
+				local current = table.remove(stack)
+				members[#members + 1] = current
+				for dc = -1, 1 do
+					for dr = -1, 1 do
+						local neighbourKey = (current.col + dc) .. ":" .. (current.row + dr)
+						local neighbour = cells[neighbourKey]
+						if neighbour and not seen[neighbourKey] then
+							seen[neighbourKey] = true
+							stack[#stack + 1] = neighbour
+						end
+					end
+				end
+			end
+			list[#list + 1] = members
+		end
+	end
+	return list
+end
+
+-- Cells no node explains, and the one nearest their middle as the next seed.
+local function unexplained(cells, nodes)
+	local left = {}
+	for _, cell in ipairs(cells) do
+		local claimed = false
+		for _, found in ipairs(nodes) do
+			if explains(found, cell) then
+				claimed = true
+				break
+			end
+		end
+		if not claimed then left[#left + 1] = cell end
+	end
+	return left
+end
+
+local function middleCell(cells)
+	local sumX, sumY = 0, 0
+	for _, cell in ipairs(cells) do
+		sumX, sumY = sumX + cell.x, sumY + cell.y
+	end
+	local mx, my = sumX / #cells, sumY / #cells
+	local best, bestDistance
+	for index, cell in ipairs(cells) do
+		local distance = (cell.x - mx) ^ 2 + (cell.y - my) ^ 2
+		if not bestDistance or distance < bestDistance then
+			best, bestDistance = index, distance
+		end
+	end
+	return best
+end
+
+local function readGeometry()
+	local left, bottom, width, height = Minimap:GetRect()
 	local scale = Minimap:GetEffectiveScale()
-	local cursorX, cursorY = GetCursorPosition()
-	cursorX, cursorY = cursorX / scale, cursorY / scale
+	for _, value in ipairs({ left, bottom, width, height, scale }) do
+		if type(value) ~= "number" or isSecret(value) then return nil end
+	end
+	if width <= 0 or height <= 0 then return nil end
+	return { cx = left + width / 2, cy = bottom + height / 2, half = width / 2,
+		scale = scale, square = GetMinimapShape and GetMinimapShape() == "SQUARE" }
+end
 
-	if sampling then
-		if settle > 0 then
-			settle = settle - 1
-			-- Re-assert the position rather than only waiting. Waiting alone changed
-			-- nothing across 0, 2 and 10 frames, which says the client does not catch
-			-- up on time; if it instead follows the minimap per assignment, repeating
-			-- the same move is what lets the blips converge on it.
-			Minimap:ClearAllPoints()
-			Minimap:SetPoint("CENTER", UIParent, "BOTTOMLEFT", sampleX, sampleY)
-			return
+-- Leaves the mouseover where the player's cursor is when it is on the minimap, so
+-- their own hover tooltip carries on, and off the map otherwise.
+local function putBack()
+	local x, y = GetCursorPosition()
+	local over = Minimap:IsMouseOver()
+	if isSecret(x) or isSecret(y) or isSecret(over) or not over then
+		x = (geometry.cx - geometry.half * 4) * geometry.scale
+		y = (geometry.cy - geometry.half * 4) * geometry.scale
+	end
+	Minimap:UpdateMouseoverAtPoint(x, y)
+end
+
+local function sweep(isNode, known, result)
+	local half = geometry.half
+	local radius = (half + step / 2) ^ 2
+	local cells = {}
+	local row = 0
+	for y = -half + step / 2, half, step do
+		local col = 0
+		for x = -half + step / 2, half, step do
+			if geometry.square or x * x + y * y <= radius then
+				local names = namesAt(x, y)
+				for _, name in ipairs(names or {}) do
+					result.names[name] = (result.names[name] or 0) + 1
+					if isNode(name) then
+						cells[name] = cells[name] or {}
+						cells[name][col .. ":" .. row] = { x = x, y = y, col = col, row = row }
+					end
+				end
+			end
+			col = col + 1
 		end
-		sampling = false
-		local text, stolen = tooltipText()
-		-- Where the minimap actually sits, not where it was told to go. Another addon
-		-- can move it back in its own frame update, and then the sample describes a
-		-- point nobody aimed at - which no amount of waiting would fix.
-		local mapX, mapY = Minimap:GetCenter()
-		Scanner.lastPlaceError = mapX and math.max(math.abs(mapX - sampleX),
-			math.abs(mapY - sampleY)) or 0
-		onSample(samplePayload, text, cursorX - (mapX or sampleX),
-			cursorY - (mapY or sampleY), stolen)
-		GameTooltip:Hide()
+		row = row + 1
 	end
 
-	if cursor > #queue then
-		finish(true)
-		return
-	end
+	for name, byKey in pairs(cells) do
+		local mine = {}
+		for _, candidate in ipairs(known) do
+			if candidate.name == name then mine[#mine + 1] = candidate end
+		end
 
-	-- queued offsets go stale while the scan waits, so drop the pass and let the
-	-- caller re-aim once scanning is possible again
-	if blocked() or not hold() then
-		finish(false)
-		return
-	end
+		for _, patch in ipairs(patches(byKey)) do
+			for _, candidate in ipairs(mine) do
+				if not result.present[candidate.ref] then
+					for _, cell in ipairs(patch) do
+						if explains(candidate, cell) then
+							result.present[candidate.ref] = true
+							break
+						end
+					end
+				end
+			end
 
-	GameTooltip:SetAlpha(0)
-
-	local point = queue[cursor]
-	cursor = cursor + 1
-
-	local x, y = cursorX - point.ox, cursorY - point.oy
-	Minimap:ClearAllPoints()
-	Minimap:SetPoint("CENTER", UIParent, "BOTTOMLEFT", x, y)
-	-- Measured: the client does not carry its blips along in the same frame the minimap
-	-- moves, so the tooltip read next frame belongs to where they were before. Forcing
-	-- the update here is what makes a sample describe the point it was aimed at.
-	refreshBlips()
-	sampleX, sampleY, samplePayload, sampling = x, y, point.payload, true
-	settle = SETTLE_FRAMES
-end)
-
--- diagnostics: which frame produced the tooltip that was just read
-function Scanner:LastOwner()
-	local owner = GameTooltip:GetOwner()
-	if not owner then return "none" end
-	if owner == Minimap then return "Minimap" end
-	return owner:GetName() or "unnamed frame"
-end
-
-function Scanner:IsBusy()
-	return driver:IsShown()
-end
-
--- returns whether scanning is impossible right now, and why
-function Scanner:IsBlocked()
-	return blocked()
-end
-
-function Scanner:Restore()
-	release()
-	-- the safety net, used when a pass left nothing to restore from: only textures
-	-- whose default is known can be put back at all
-	for _, texture in ipairs(hideableTextures) do
-		if texture.fallback then
-			Minimap[texture.set](Minimap, texture.fallback)
+			local measured = {}
+			local left = unexplained(patch, mine)
+			while #left > 0 and #measured < PER_PATCH do
+				local seedIndex = middleCell(left)
+				local x, y = measure(left[seedIndex], name)
+				if x then
+					local found = { name = name, x = x, y = y }
+					measured[#measured + 1] = found
+					result.found[#result.found + 1] = found
+					mine[#mine + 1] = found
+					left = unexplained(left, { found })
+				else
+					result.unmeasured = result.unmeasured + 1
+					table.remove(left, seedIndex)
+				end
+			end
 		end
 	end
-	refreshBlips()
 end
 
--- Each point carries an opaque payload handed straight back to sampler, so a caller
--- names its points however it likes. done(completed) fires once, on the pass ending
--- or being dropped.
-function Scanner:Submit(points, sampler, done)
-	if #points == 0 then return end
-	queue, cursor, sampling, settle = points, 1, false, 0
-	onSample, onDone = sampler, done
-	driver:Show()
-end
+-- One look at the whole minimap. isNode(name) says which names are worth locating;
+-- known holds nodes already located, as { name, x, y, ref } in map units from the
+-- centre, and is only confirmed, never measured again. Returns { present = { [ref] =
+-- true }, found = { { name, x, y } }, names = { [name] = cells }, reads, ms,
+-- unmeasured, half } or nil and why. The soft cursor is switched off on every path.
+function Scanner:Sweep(isNode, known)
+	geometry = readGeometry()
+	if not geometry then return nil, "the minimap's geometry is unreadable" end
+	node = NODE_PX / geometry.scale
+	step, nodeSlack = node * STEP_SHARE, node * NODE_SLACK_SHARE
+	claimSlack, stride = node * CLAIM_SLACK_SHARE, node * STRIDE_SHARE
+	-- two squares side by side; a name reading further than that is a chain of nodes
+	reach = node * 2 + stride
 
-function Scanner:Abort()
-	if not driver:IsShown() then return end
-	finish(false)
+	local result = { present = {}, found = {}, names = {}, unmeasured = 0,
+		half = geometry.half }
+	reads = 0
+	local started = debugprofilestop()
+	Minimap:SetUsingSoftCursor(true)
+	local ok, err = pcall(sweep, isNode, known, result)
+	pcall(putBack)
+	Minimap:SetUsingSoftCursor(false)
+	if not ok then return nil, tostring(err) end
+
+	result.reads = reads
+	result.ms = debugprofilestop() - started
+	return result
 end

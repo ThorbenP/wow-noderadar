@@ -6,8 +6,6 @@ NR.Options = Options
 local db
 local window, toggleButton, settings
 
--- Templates differ between client generations, so labels are built by hand and only
--- the three oldest, universally present templates are used.
 local function checkbox(parent, label, x, y, get, set)
 	local box = CreateFrame("CheckButton", nil, parent, "UICheckButtonTemplate")
 	box:SetPoint("TOPLEFT", x, y)
@@ -23,15 +21,22 @@ local function checkbox(parent, label, x, y, get, set)
 end
 
 local function slider(parent, label, minimum, maximum, step, format, x, y, width, get, set)
-	local bar = CreateFrame("Slider", "NodeRadarSlider" .. label:gsub("%W", ""), parent,
-		"OptionsSliderTemplate")
+	-- OptionsSliderTemplate is legacy FrameXML a client may have dropped
+	local name = "NodeRadarSlider" .. label:gsub("%W", "")
+	local legacy = C_XMLUtil.GetTemplateInfo("OptionsSliderTemplate") ~= nil
+	local bar = CreateFrame("Slider", name, parent,
+		legacy and "OptionsSliderTemplate" or "UISliderTemplate")
+	if not legacy then
+		bar:SetHeight(17)
+		bar.Text = bar:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+		bar.Text:SetPoint("BOTTOM", bar, "TOP", 0, 2)
+	end
 	bar:SetPoint("TOPLEFT", x, y)
 	bar:SetWidth(width)
 	bar:SetMinMaxValues(minimum, maximum)
 	bar:SetValueStep(step)
 	if bar.SetObeyStepOnDrag then bar:SetObeyStepOnDrag(true) end
 
-	local name = bar:GetName()
 	local low = bar.Low or _G[name .. "Low"]
 	local high = bar.High or _G[name .. "High"]
 	local caption = bar.Text or _G[name .. "Text"]
@@ -67,12 +72,25 @@ local function section(parent, label, y, width)
 	rule:SetWidth(width)
 end
 
+-- Every NodeRadar window: a thin green rim behind a translucent black panel. The
+-- sublevels fix which texture draws on top; within one level the client decides.
+function NR.StyleWindow(frame)
+	local border = frame:CreateTexture(nil, "BACKGROUND", nil, -8)
+	border:SetPoint("TOPLEFT", -1, 1)
+	border:SetPoint("BOTTOMRIGHT", 1, -1)
+	border:SetColorTexture(0.6, 0.9, 0.7, 0.35)
+
+	local background = frame:CreateTexture(nil, "BACKGROUND", nil, -7)
+	background:SetAllPoints()
+	background:SetColorTexture(0, 0, 0, 0.88)
+end
+
 local LEFT, RIGHT = 20, 240
 local SLIDER_WIDTH = 170
 
 local function buildWindow()
 	settings = CreateFrame("Frame", "NodeRadarSettingsFrame", UIParent)
-	settings:SetSize(460, 580)
+	settings:SetSize(460, 550)
 	settings:SetPoint("CENTER")
 	settings:SetFrameStrata("DIALOG")
 	settings:SetMovable(true)
@@ -82,14 +100,7 @@ local function buildWindow()
 	settings:SetScript("OnDragStop", settings.StopMovingOrSizing)
 	settings:Hide()
 
-	local border = settings:CreateTexture(nil, "BACKGROUND")
-	border:SetPoint("TOPLEFT", -1, 1)
-	border:SetPoint("BOTTOMRIGHT", 1, -1)
-	border:SetColorTexture(0.6, 0.9, 0.7, 0.35)
-
-	local background = settings:CreateTexture(nil, "BACKGROUND")
-	background:SetAllPoints()
-	background:SetColorTexture(0, 0, 0, 0.88)
+	NR.StyleWindow(settings)
 
 	local title = settings:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge")
 	title:SetPoint("TOPLEFT", 16, -14)
@@ -102,62 +113,66 @@ local function buildWindow()
 	note:SetPoint("TOPLEFT", 16, -40)
 	note:SetWidth(420)
 	note:SetJustifyH("LEFT")
-	note:SetText("Shows herb and ore nodes that really exist in minimap range. "
-		.. "Needs the matching tracking ability to be active.")
+	note:SetText("Shows the herb and ore nodes on your minimap on a radar around your "
+		.. "character. Needs Find Herbs or Find Minerals to be active.")
 
 	local controls = {}
 	local function add(control) controls[#controls + 1] = control end
 
-	section(settings, "Nodes", -74, 424)
-	add(slider(settings, "Icon size", 8, 64, 2, "%d px", LEFT + 4, -106, SLIDER_WIDTH,
-		function() return db.iconSize end,
-		function(value) db.iconSize = value NR.Radar:ApplySettings() end))
-	add(slider(settings, "Node opacity", 10, 100, 5, "%d%%", RIGHT + 4, -106, SLIDER_WIDTH,
-		function() return db.nodeAlpha * 100 end,
-		function(value) db.nodeAlpha = value / 100 end))
-	add(checkbox(settings, "Show distance in yards", LEFT, -140,
-		function() return db.showDistances end,
-		function(value) db.showDistances = value NR.Radar:ApplySettings() end))
-	add(checkbox(settings, "Red when your skill is too low", RIGHT, -140,
-		function() return db.colorBySkill end,
-		function(value) db.colorBySkill = value end))
-	add(checkbox(settings, "Highlight a node when it first appears", LEFT, -170,
-		function() return db.showSparkle end,
-		function(value) db.showSparkle = value end))
-
-	section(settings, "Radar", -214, 424)
-	add(slider(settings, "Radar radius", 100, 400, 10, "%d px", LEFT + 4, -246, SLIDER_WIDTH,
+	section(settings, "Radar", -74, 424)
+	add(slider(settings, "Radar radius", 100, 400, 10, "%d px", LEFT + 4, -106, SLIDER_WIDTH,
 		function() return db.radius end,
 		function(value) db.radius = value NR.Radar:ApplySettings() end))
-	add(slider(settings, "Grid opacity", 5, 100, 5, "%d%%", RIGHT + 4, -246, SLIDER_WIDTH,
+	add(slider(settings, "Icon size", 8, 64, 2, "%d px", RIGHT + 4, -106, SLIDER_WIDTH,
+		function() return db.iconSize end,
+		function(value) db.iconSize = value NR.Radar:ApplySettings() end))
+	add(slider(settings, "Node opacity", 10, 100, 5, "%d%%", LEFT + 4, -152, SLIDER_WIDTH,
+		function() return db.nodeAlpha * 100 end,
+		function(value) db.nodeAlpha = value / 100 end))
+	add(slider(settings, "Grid opacity", 5, 100, 5, "%d%%", RIGHT + 4, -152, SLIDER_WIDTH,
 		function() return db.gridAlpha * 100 end,
 		function(value) db.gridAlpha = value / 100 NR.Radar:ApplySettings() end))
-	add(checkbox(settings, "Show the range rings and axes", LEFT, -280,
+	add(checkbox(settings, "Show distance in yards", LEFT, -188,
+		function() return db.showDistances end,
+		function(value) db.showDistances = value NR.Radar:ApplySettings() end))
+	add(checkbox(settings, "Show the range rings and axes", RIGHT, -188,
 		function() return db.showGrid end,
 		function(value) db.showGrid = value NR.Radar:ShowGrid(value) end))
 
-	section(settings, "Scanning", -324, 424)
-	add(slider(settings, "Recheck a found node every", 0.5, 10, 0.5, "%.1f s", LEFT + 4, -356,
-		SLIDER_WIDTH,
-		function() return db.recheckSeconds end,
-		function(value) db.recheckSeconds = value end))
-	add(checkbox(settings, "Pause while in combat", RIGHT, -354,
-		function() return db.pauseInCombat end,
-		function(value) db.pauseInCombat = value NR.Scanner.pauseInCombat = value end))
+	section(settings, "Which nodes", -232, 424)
+	add(checkbox(settings, "Hide when my skill is too low", LEFT, -262,
+		function() return db.hideTooLow end,
+		function(value) db.hideTooLow = value end))
+	add(checkbox(settings, "Hide nodes giving no skill-up", RIGHT, -262,
+		function() return db.hideTrivial end,
+		function(value) db.hideTrivial = value end))
+	local choose = CreateFrame("Button", nil, settings, "UIPanelButtonTemplate")
+	choose:SetSize(200, 24)
+	choose:SetPoint("TOPLEFT", LEFT + 4, -294)
+	choose:SetText("Choose herbs and ores...")
+	choose:SetScript("OnClick", function() NR.Filter:Open(settings) end)
 
-	section(settings, "Interface", -400, 424)
-	add(checkbox(settings, "Show the control window", LEFT, -430,
+	section(settings, "Hints", -338, 424)
+	add(checkbox(settings, "Highlight a new node", LEFT, -368,
+		function() return db.showSparkle end,
+		function(value) db.showSparkle = value end))
+	add(checkbox(settings, "Sound when a new node appears", RIGHT, -368,
+		function() return db.playSound end,
+		function(value) db.playSound = value end))
+	add(checkbox(settings, "Red when my skill is too low", LEFT, -398,
+		function() return db.colorBySkill end,
+		function(value) db.colorBySkill = value end))
+	add(checkbox(settings, "Skill in the minimap tooltip", RIGHT, -398,
+		function() return db.skillTooltip end,
+		function(value) db.skillTooltip = value end))
+
+	section(settings, "General", -442, 424)
+	add(checkbox(settings, "Show the control window", LEFT, -472,
 		function() return db.showWindow end,
 		function(value) db.showWindow = value Options:ApplySettings() end))
-	add(checkbox(settings, "Start automatically on login", RIGHT, -430,
+	add(checkbox(settings, "Start automatically on login", RIGHT, -472,
 		function() return db.autoStart end,
 		function(value) db.autoStart = value end))
-	add(checkbox(settings, "Debug: log every scan", LEFT, -460,
-		function() return db.debugLog end,
-		function(value) db.debugLog = value end))
-	add(checkbox(settings, "Debug: place test nodes", RIGHT, -460,
-		function() return db.debugTestNodes end,
-		function(value) db.debugTestNodes = value NR.SetTestNodes(value) end))
 
 	local reset = CreateFrame("Button", nil, settings, "UIPanelButtonTemplate")
 	reset:SetSize(150, 24)
@@ -171,7 +186,6 @@ local function buildWindow()
 				db[key] = type(value) == "table" and CopyTable(value) or value
 			end
 		end
-		NR.Scanner.pauseInCombat = db.pauseInCombat
 		NR.Radar:ApplySettings()
 		Options:ApplySettings()
 		settings.refresh()
@@ -199,8 +213,8 @@ local function registerBlizzardEntry()
 	note:SetPoint("TOPLEFT", 16, -44)
 	note:SetWidth(500)
 	note:SetJustifyH("LEFT")
-	note:SetText("Shows herb and ore nodes that really exist in minimap range. "
-		.. "All settings live in NodeRadar's own window, reachable from the button "
+	note:SetText("Shows the herb and ore nodes on your minimap on a radar around your "
+		.. "character. All settings live in NodeRadar's own window, reachable from the button "
 		.. "below, from the gear on the control window, or with /nr options.")
 
 	local open = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
@@ -209,11 +223,7 @@ local function registerBlizzardEntry()
 	open:SetText("Open NodeRadar settings")
 	open:SetScript("OnClick", function() Options:Open() end)
 
-	if Settings and Settings.RegisterCanvasLayoutCategory then
-		Settings.RegisterAddOnCategory(Settings.RegisterCanvasLayoutCategory(panel, panel.name))
-	elseif InterfaceOptions_AddCategory then
-		InterfaceOptions_AddCategory(panel)
-	end
+	Settings.RegisterAddOnCategory(Settings.RegisterCanvasLayoutCategory(panel, panel.name))
 end
 
 function Options:CreateWindow()

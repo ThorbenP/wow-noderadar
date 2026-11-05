@@ -22,14 +22,7 @@ local function build()
 	frame:SetScript("OnDragStop", frame.StopMovingOrSizing)
 	frame:Hide()
 
-	local background = frame:CreateTexture(nil, "BACKGROUND")
-	background:SetAllPoints()
-	background:SetColorTexture(0, 0, 0, 0.92)
-
-	local border = frame:CreateTexture(nil, "BORDER")
-	border:SetPoint("TOPLEFT", -1, 1)
-	border:SetPoint("BOTTOMRIGHT", 1, -1)
-	border:SetColorTexture(0.6, 0.9, 0.7, 0.35)
+	NR.StyleWindow(frame)
 
 	local title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
 	title:SetPoint("TOPLEFT", 14, -12)

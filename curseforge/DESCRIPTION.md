@@ -1,105 +1,80 @@
 # NodeRadar
 
-You have *Find Minerals* up, you are riding through Nagrand, and you sail straight
-past a Fel Iron vein because the yellow dot on your minimap is four pixels wide and
-you were watching the road.
-
-NodeRadar puts those nodes on a **radar centred on your screen** — big, turning with
+**Never ride past a herb or ore vein again.** NodeRadar takes the herb and ore nodes
+from your minimap and shows them on a big radar around your character — turning with
 your view, with the distance in yards next to every icon.
 
-## What makes it different from a node database
-
-Addons that draw node positions from a database show you where a node **might** be.
-That list never changes: it does not know whether the vein was mined two minutes ago
-by the rogue ahead of you.
-
-NodeRadar shows only nodes it has **confirmed exist right now**. Every icon on the
-radar is a node the client itself is currently drawing on your minimap. If it is not
-there, it is not on the radar.
-
-## Support the project
-
-If this saves you time and you'd like to say thanks, you can buy me a coffee —
-entirely optional, the addon stays free either way.
-
-- ☕ **Buy me a coffee**: <https://buymeacoffee.com/thpi>
+Made for **World of Warcraft: Forever**.
 
 ## Features
 
-- **Live confirmation** — every icon is a node that exists at that moment, not a
-  database guess.
-- **Screen-centred radar** with range rings, axes and a heading marker, turning with
-  your view. Radius, icon size and grid are configurable.
-- **Live tracking between scans** — node positions are held in world coordinates, so
-  the icons move and rotate smoothly as you ride, independent of the scan rate.
-- **Stays out of your way** — during a scan the map image, tracking blips, your
-  arrow, the quest and corpse arrows, target and focus markers and every addon pin are
-  hidden, including pins that opt out of being hidden and markers anchored beside the
-  minimap rather than inside it. Minimap clicks are disabled too, so no context menu
-  can open under your cursor.
-- **Ignores database pins** — the minimap icons of GatherMate2, Questie and anything
-  else are excluded from the measurement, so a "possible" node is never mistaken for
-  a real one.
-- **Correct indoors** — caves and buildings use a different minimap scale, and the
-  radar follows it instead of measuring everything a third too close.
-- **Nodes sharing a spot cost one sample** — the tooltip lists everything under the
-  cursor, so candidates a few pixels apart are checked together, and the tooltip
-  decides which of them are actually there. Where the database expects copper and
-  tin has spawned, the radar shows tin.
-- **Draggable control window** with start/stop and a settings button, plus a full
-  options panel and `/nr`.
+- **Big, clear radar** in the middle of your screen instead of tiny yellow dots on
+  the minimap
+- **Only what is really there** — every icon is a node your minimap shows right now;
+  a node someone else just gathered disappears
+- **A sound** when a new node you can gather comes into range
+- **Skill colours** — nodes beyond your skill show red, or can be hidden entirely,
+  just like grey nodes that no longer give a skill-up
+- **Pick your herbs and ores** — one checkbox each
+- **Required skill in the minimap tooltip** — hover a node and see "Requires Mining
+  (75)", coloured from red to grey
+- **Works with any minimap addon**, whatever size or skin
+- **No dependencies**, light on performance, available in all client languages
 
-## Requirements
+## Getting started
 
-**[GatherMate2](https://www.curseforge.com/wow/addons/gathermate2) with its data
-imported.** Both parts are mandatory. Install it, then run `/gathermate` → *Import*
-→ tick *Mining* and *Herbalism* → *Import GatherMate2Data*.
+1. Install NodeRadar.
+2. Turn on **Find Herbs** or **Find Minerals**.
+3. Click **Start scanning** in the small NodeRadar window, or type `/nr`.
 
-**An active tracking ability** — *Find Minerals* or *Find Herbs*. The client draws
-blips only for the tracking type that is active, and Burning Crusade allows one at
-a time. NodeRadar can confirm only what the client draws, so only that type's spawn
-points are aimed at — and with no tracking up, nothing is scanned at all.
+## Commands
 
-### Why the dependency is not optional
+| Command | What it does |
+|---|---|
+| `/nr` | start or stop the radar |
+| `/nr options` | open the settings |
+| `/nr debug` | copy a diagnostic report for a bug report |
 
-Its node positions are the smaller half of it. NodeRadar also needs GatherMate2's
-localised node names, and there is no substitute: the minimap shows blips for
-things that are not nodes. A measured sweep through Stormwind returned *Auctioneer
-Lympkin*, *Auctioneer Buckler*, *Auctioneer Redmuse* and *Myra Tyrngaarde* —
-without a name list to check against, every auctioneer in the city would show up on
-your radar as an ore vein.
+## Settings
 
-## Honest limitations
+Open them with `/nr options`, the gear button in the NodeRadar window, or
+*Options → AddOns → NodeRadar*.
 
-- **No scanning while you hold a mouse button.** A held button binds the client's
-  mouse focus — turning the camera, or dragging a window — so no tooltip appears and
-  no node can be confirmed. Rather than clearing the display, the radar holds what it
-  last confirmed until you let go, up to thirty seconds.
-- **Only nodes the database knows about.** A spawn point missing from GatherMate2's
-  data is never aimed at and therefore never confirmed.
-- **The minimap blinks.** Confirming a node means putting the minimap under your
-  cursor for one frame per sample. With a handful of candidates that is a few frames
-  every few seconds — barely visible, but it is there. Party and raid blips stay on
-  screen while it happens: the client draws them outside the frame hierarchy and
-  offers no way to suppress them.
-- **Targeted scans, no interval.** A spawn point new to the range is asked about at
-  once and keeps priority for the next few seconds, since the client draws a blip at
-  its own pace. What a pass can carry is capped, and the longest-unasked spot goes
-  first, so the rate per spot falls by itself as more of them compete.
-- **A harvested node lingers** for the recheck interval plus 2 seconds before the
-  missing confirmation expires it.
+- **Radar** — size, icon size, opacity, distances, range rings
+- **Which nodes** — hide nodes beyond your skill or without a skill-up, choose herbs
+  and ores
+- **Hints** — highlight and sound for new nodes, red icons, skill in the tooltip
+- **General** — the NodeRadar window, start on login
 
-## How it works
+## FAQ
 
-The Lua API has no getter for minimap blips and no function that enumerates world
-objects. What blips do have is a tooltip on hover — so the addon hovers them: it
-makes the minimap invisible and moves it under your cursor, one sample point at a
-time, and matches the resulting tooltip against GatherMate2's node names. The offset
-from the minimap centre is the direction and distance to the node. The client
-resolves mouse focus once per frame, so one sample costs one frame — that is the
-hard limit on how fast this can be.
+**The radar stays empty.**
+Check that Find Herbs or Find Minerals is active — NodeRadar tells you in chat if it
+is not. Inside dungeons and raids the radar does not work.
 
-Source, issues and the full technical write-up:
-<https://github.com/ThorbenP/wow-noderadar>
+**A node on my minimap does not show up on the radar.**
+NodeRadar knows all classic herbs and ores. A name it does not know yet is learned
+the first time you gather that node, and shows from then on. Also check *Which nodes*
+in the settings.
 
-Licence: GPL-3.0-or-later.
+**Do I need GatherMate2?**
+No. NodeRadar needs no other addon.
+
+## Known limitations
+
+- Does not work inside instances.
+- A gathered node stays on the radar for up to half a second.
+
+## Bug reports and feedback
+
+Type `/nr debug`, press Ctrl+C, and paste the report into an issue on
+[GitHub](https://github.com/ThorbenP/wow-noderadar/issues).
+
+## Support the project
+
+NodeRadar is free and stays free. If it saves you time and you'd like to say thanks:
+☕ [Buy me a coffee](https://buymeacoffee.com/thpi)
+
+---
+
+Licence: GPL-3.0-or-later. Node names based on Spotnick's NodeRadar (MIT).

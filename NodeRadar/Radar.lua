@@ -39,18 +39,14 @@ local function createPin()
 	local fade = group:CreateAnimation("Alpha")
 	fade:SetDuration(0.75)
 	fade:SetSmoothing("IN_OUT")
-	if fade.SetFromAlpha then
-		fade:SetFromAlpha(1)
-		fade:SetToAlpha(0.3)
-	end
+	fade:SetFromAlpha(1)
+	fade:SetToAlpha(0.3)
 	local rise = group:CreateAnimation("Alpha")
 	rise:SetDuration(0.75)
 	rise:SetStartDelay(0.75)
 	rise:SetSmoothing("IN_OUT")
-	if rise.SetFromAlpha then
-		rise:SetFromAlpha(0.3)
-		rise:SetToAlpha(1)
-	end
+	rise:SetFromAlpha(0.3)
+	rise:SetToAlpha(1)
 	pin.sparkleAnim = group
 
 	pin:SetSize(db.iconSize, db.iconSize)
@@ -165,8 +161,7 @@ function Radar:ShowGrid(shown)
 	grid.heading:SetShown(shown)
 end
 
--- ring captions only make sense once the scan range is known, and it follows
--- GatherMate's tracking distance
+-- ring captions follow the minimap's view radius, which changes with zoom and indoors
 function Radar:SetRange(yards)
 	if yards == range then return end
 	range = yards

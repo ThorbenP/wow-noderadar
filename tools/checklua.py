@@ -11,7 +11,8 @@ KEYWORDS = {"and", "or", "not", "if", "then", "else", "elseif", "end", "function
 API = {"print", "date", "type", "ipairs", "pairs", "next", "wipe", "select", "tostring",
        "tonumber", "strtrim", "strsplit", "strjoin", "tinsert", "tremove", "unpack",
        "format", "load", "loadstring", "pcall", "error", "assert", "setmetatable",
-       "getmetatable", "rawget", "rawset", "hooksecurefunc", "string", "math", "table",
+       "getmetatable", "rawget", "rawset", "hooksecurefunc", "issecretvalue",
+       "debugprofilestop", "collectgarbage", "string", "math", "table",
        "os", "bit", "coroutine"}
 
 
