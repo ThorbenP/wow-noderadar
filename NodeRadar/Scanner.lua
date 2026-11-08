@@ -63,7 +63,8 @@ local TRIES = 3
 local world
 local routine
 local request
--- idle; prepared: made ready off screen, goes under the cursor next frame; read: placed,
+-- idle; prepared: resized off screen, goes under the cursor next frame; settle: under
+-- the cursor for the frame the client needs to lay out the resized map; read: placed,
 -- read next frame; gap: one frame for the world's own mouseover
 local phase = "idle"
 local resumeAt = 0
@@ -592,11 +593,18 @@ function Scanner:Step(free)
 	end
 	if phase == "prepared" then
 		if free and place() then
-			phase = "read"
+			phase = "settle"
 		else
 			Map:Park(false)
 			phase = "idle"
 		end
+		return
+	end
+	-- After a resize the client lays the blips out anew only once the map is drawn on
+	-- screen, so the first frame under the cursor reads nothing and is let pass. The map
+	-- already sits there; a cursor busy now only costs this one reading.
+	if phase == "settle" then
+		phase = "read"
 		return
 	end
 	-- a burst the cursor interrupts must not keep the map from its place

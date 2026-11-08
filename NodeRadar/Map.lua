@@ -214,9 +214,10 @@ function Map:Ready(pixels)
 	return held.away and math.abs(Minimap:GetWidth() * Minimap:GetEffectiveScale() - pixels) < 0.01
 end
 
--- The client applies a new size and icon scale only a frame later - until then it draws
--- the old blips at full size. So the map is made invisible, shrunk and resized off
--- screen, a frame before it goes under the cursor.
+-- The client applies a new icon scale only a frame later - until then it draws the
+-- blips at full size. So the map is made invisible, shrunk and resized off screen, a
+-- frame before it goes under the cursor. The new size takes effect only once the map
+-- is on screen; the scanner lets that first frame under the cursor pass unread.
 function Map:Prepare(pixels)
 	if not held.away then goAway() end
 	local size = pixels / Minimap:GetEffectiveScale()

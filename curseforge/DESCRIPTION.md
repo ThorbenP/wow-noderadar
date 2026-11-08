@@ -6,6 +6,39 @@ your view, with the distance in yards next to every icon.
 
 Made for **World of Warcraft: Forever**.
 
+**Important since the November 2026 WoW Forever update:** your minimap blinks briefly
+now and then while NodeRadar reads it, and GatherMate2 is recommended. Read why
+below.
+
+## Why the minimap blinks
+
+In November 2026 Blizzard changed WoW Forever so that addons can no longer look at
+the minimap in the background. That is exactly how NodeRadar 2.x found its nodes,
+so after that update its radar stayed empty.
+
+NodeRadar 3.0 still reads your minimap, but now it has to borrow it for a moment: it
+moves the minimap under your mouse cursor for a split second, reads what is there,
+and puts it straight back. That is the short blink you see where your minimap sits.
+
+- It happens every twenty seconds, when a known spawn point comes into range (with
+  GatherMate2), and for a little longer when a new node turns up — but never more
+  than once every five seconds.
+- While it is away the minimap is invisible, so nothing shows at your cursor.
+- NodeRadar only does it while your mouse rests on open world. It never gets in the
+  way when you point at a monster, an NPC or a node, use a window or a bar, turn the
+  camera or aim a spell — it simply waits, and the radar updates a moment later.
+
+Blizzard may restrict this further in a later update. If that happens, NodeRadar
+stops finding nodes until a new way is found.
+
+### GatherMate2 is recommended
+
+GatherMate2 knows where herbs and ores spawn. With it, NodeRadar looks at those spots
+first instead of searching your whole range: new nodes appear sooner, and the minimap
+blinks for a shorter time. Install **GatherMate2** and **GatherMate2_Data**, and
+import the data into GatherMate2 once — see *Getting started*. NodeRadar works
+without them too.
+
 ## Features
 
 - **Big, clear radar** in the middle of your screen instead of tiny yellow dots on
@@ -19,14 +52,22 @@ Made for **World of Warcraft: Forever**.
 - **Required skill in the minimap tooltip** — hover a node and see "Requires Mining
   (75)", coloured from red to grey
 - **Faster with GatherMate2** — if it is installed, NodeRadar checks its spawn points
-  first, including GatherMate2_Data, which it loads by itself
+  first, including those from GatherMate2_Data
 - **Light on performance**, available in all client languages
 
 ## Getting started
 
-1. Install NodeRadar.
-2. Turn on **Find Herbs** or **Find Minerals**.
-3. Click **Start scanning** in the small NodeRadar window, or type `/nr`.
+1. **Install NodeRadar.** The CurseForge app installs GatherMate2 and
+   GatherMate2_Data along with it. Installing by hand, copy the `NodeRadar` folder
+   into `World of Warcraft/_forever_/Interface/AddOns/`, and get GatherMate2 and
+   GatherMate2_Data from CurseForge as well.
+2. **Import the spawn points into GatherMate2 once** — GatherMate2 does not do this
+   on its own: *Options → AddOns → GatherMate 2 → Import → GatherMate2Data*, tick
+   **Mining** and **Herbalism** under *Databases to Import*, and click **Import
+   GatherMate2Data**. GatherMate2 then also shows the spots on its own maps.
+3. **Turn on Find Herbs or Find Minerals.**
+4. **Start the radar:** click **Start scanning** in the small NodeRadar window, or
+   type `/nr`.
 
 ## Commands
 
@@ -58,21 +99,17 @@ NodeRadar knows all classic herbs and ores. A name it does not know yet is learn
 the first time you gather that node, and shows from then on. Also check *Which nodes*
 in the settings.
 
-**Why does my minimap blink?**
-To read a node, NodeRadar moves the minimap under your mouse cursor for a moment —
-every few seconds, and a little longer when a new node turns up. Nothing is ever
-read while the cursor is on a window, a bar, or something in the world.
-
 **Do I need GatherMate2?**
-No. With GatherMate2 — and GatherMate2_Data, if it has spawn points for your area —
-new nodes show up sooner, because NodeRadar looks at the known spawn points first.
+No, but it is recommended — see *GatherMate2 is recommended* above.
+
+**The radar is slow to show a node.**
+NodeRadar reads the minimap only while your mouse rests on open world. If the cursor
+keeps moving, sits on your bars, or you steer with a mouse button held, it waits.
 
 ## Known limitations
 
 - Does not work inside instances.
-- Nodes are only read while the mouse cursor rests on open world: not while you turn
-  the camera with a mouse button held, and not while the cursor is on a window, a bar
-  or something in the world you are pointing at.
+- The minimap blinks briefly now and then — see *Why the minimap blinks* above.
 
 ## Bug reports and feedback
 
