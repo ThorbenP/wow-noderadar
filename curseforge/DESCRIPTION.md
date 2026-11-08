@@ -22,9 +22,10 @@ and puts it straight back. That is the short blink you see where your minimap si
 
 - It happens every twenty seconds, when a known spawn point comes into range (with
   GatherMate2), and for a little longer when a new node turns up — but never more
-  than once every five seconds. Where GatherMate2 knows no spawn point for a node you
-  want, only once a minute.
-- Nodes your filters hide cost nothing: NodeRadar does not look for them.
+  than once every five seconds.
+- With GatherMate2, NodeRadar only looks where a node you want can spawn: no spawn
+  point of one in range and none on the radar, no blink at all. Nodes your filters
+  hide cost nothing.
 - While it is away the minimap is invisible, so nothing shows at your cursor.
 - NodeRadar only does it while your mouse rests on open world. It never gets in the
   way when you point at a monster, an NPC or a node, use a window or a bar, turn the
@@ -112,6 +113,8 @@ keeps moving, sits on your bars, or you steer with a mouse button held, it waits
 
 - Does not work inside instances.
 - The minimap blinks briefly now and then — see *Why the minimap blinks* above.
+- With GatherMate2, a node standing where GatherMate2 knows no spawn point of a node
+  you want is found only once such a spawn point is in range too.
 
 ## Bug reports and feedback
 

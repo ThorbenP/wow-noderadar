@@ -200,8 +200,9 @@ local function toFacing(east, north, facing)
 	return east * c + north * s, -east * s + north * c
 end
 
--- Nodes taken off the radar lately, other than by the player's own gathering: one found
--- again at the same spot is the same node, and is no news.
+-- Nodes taken off the radar lately: one found again at the same spot is the same node,
+-- and is no news - a vein mined once is often still there for the next swing, and
+-- nothing respawns that quickly.
 local REMEMBER_SECONDS = 120
 local SAME_SPOT = 15
 local removed = {}
@@ -210,10 +211,8 @@ local function removeHit(key, reason)
 	local hit = hits[key]
 	if not hit then return end
 	hits[key] = nil
-	if reason ~= "gathered" then
-		removed[#removed + 1] = { name = hit.name, east = hit.east, north = hit.north,
-			appearedAt = hit.appearedAt, at = GetTime(), reason = reason }
-	end
+	removed[#removed + 1] = { name = hit.name, east = hit.east, north = hit.north,
+		appearedAt = hit.appearedAt, at = GetTime(), reason = reason }
 end
 
 -- the remembered node at this spot, taken out of the memory
@@ -308,6 +307,16 @@ end
 -- interrupts the player: not while the cursor is on a frame or on something in the
 -- world, not while it is dragged, aimed, or carrying something, and not while the camera
 -- turns.
+-- A frame's name for the log. Protected frames answer secret names, which must never
+-- reach a string that is compared or stored.
+local function frameName(frame)
+	if frame == nil then return "none" end
+	if isSecret(frame) then return "a protected frame" end
+	local name = frame:GetDebugName()
+	if isSecret(name) or type(name) ~= "string" then return "a protected frame" end
+	return name
+end
+
 local function cursorBusy()
 	if IsMouselooking() then return "the camera turns" end
 	if IsMouseButtonDown() then return "a mouse button is held" end
@@ -315,21 +324,25 @@ local function cursorBusy()
 	if GetCursorInfo() then return "the cursor carries something" end
 	local hovering = UnitExists("mouseover")
 	if isSecret(hovering) or hovering then return "the cursor is on a unit" end
-	if GameTooltip:IsShown() and not mutedTooltips[GameTooltip] then
-		local owner = GameTooltip:GetOwner()
-		return "a tooltip is shown (owner " .. (owner and (owner:GetDebugName() or "unnamed")
-			or "none") .. ")"
+	local shown = GameTooltip:IsShown()
+	if isSecret(shown) or shown and not mutedTooltips[GameTooltip] then
+		return "a tooltip is shown (owner " .. frameName(GameTooltip:GetOwner()) .. ")"
 	end
 	local focus = GetMouseFoci()[1]
+	if isSecret(focus) then return "the cursor is on a protected frame" end
 	-- the map under the cursor is the reading's own doing; in its place it is the player's
 	if focus == Minimap and not Map:IsAway() then return "the cursor is on the minimap" end
 	if focus ~= nil and focus ~= Minimap and focus ~= WorldFrame then
-		return "the cursor is on " .. (focus:GetDebugName() or "an unnamed frame")
+		return "the cursor is on " .. frameName(focus)
 	end
 end
 
 -- a pause of the readings is logged when it ends, if it lasted long enough to matter
 local PAUSE_LOG_SECONDS = 2
+-- A player steering with a mouse button lets go for a moment between two presses; a
+-- burst starting in that moment blinks right after the press. Readings resume only once
+-- the cursor has stayed free this long.
+local RESUME_GRACE = 2
 local busySince, busyWhy
 
 local function cursorFree(now)
@@ -340,7 +353,7 @@ local function cursorFree(now)
 		end
 		busySince, busyWhy = now, why
 	end
-	return why == nil
+	return why == nil and now - busySince >= RESUME_GRACE
 end
 
 local function readViewRadius()
@@ -359,7 +372,7 @@ local function updateHold()
 		if Map:Hold() then
 			log("readings start, minimap %.0f px", Map:HomePixels())
 			-- a pause still running from before is not this hold's
-			busySince, busyWhy = GetTime(), nil
+			busySince, busyWhy = -math.huge, nil
 			Scanner:Start(context)
 		elseif not refusedLogged then
 			refusedLogged = true

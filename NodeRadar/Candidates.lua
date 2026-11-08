@@ -151,6 +151,20 @@ function Candidates:Prepare(instanceID)
 		if frame then zones = zones + 1 end
 	end
 	self.zones = zones
+	-- a name NodeRadar does not know cannot be judged by the filters
+	local unknown = {}
+	for _, bucket in pairs(buckets) do
+		for _, candidate in ipairs(bucket) do
+			if candidate.name and not NR.localNodes[candidate.name] then
+				unknown[candidate.name] = true
+			end
+		end
+	end
+	local list = {}
+	for name in pairs(unknown) do list[#list + 1] = name end
+	table.sort(list)
+	NR.Log("spawn point names unknown to NodeRadar: %s", #list > 0 and table.concat(list, ", ")
+		or "none")
 end
 
 -- Calls visit(candidate) for every candidate within `radius` yards of (east, north).
