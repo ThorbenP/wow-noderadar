@@ -280,6 +280,11 @@ local context = {
 	addHit = addHit,
 	removeHit = removeHit,
 	cycleDone = function() baselineTaken = true end,
+	-- whether the filters let a node of this name onto the radar; unknown names may
+	wanted = function(name)
+		local info = nodeInfo(name)
+		return not info or wanted({ item = info[3], kind = info[1], skill = info[2] })
+	end,
 }
 
 -- One source for why the minimap cannot be read, in the order that matters to the player.
@@ -410,6 +415,14 @@ local function render(now)
 end
 
 local preparedInstance
+local lastFilters
+
+local function hiddenCount()
+	local total = 0
+	for _ in pairs(db.hiddenItems) do total = total + 1 end
+	return total
+end
+
 local function tick()
 	refreshTracking()
 	refreshSkills()
@@ -439,6 +452,14 @@ local function tick()
 		end
 	end
 	pauseReason = reason
+	-- what the filters let through changes with the settings and with every skill-up
+	local filters = string.format("%s %s %s %s %d", tostring(db.hideTrivial),
+		tostring(db.hideTooLow), tostring(skillRank.herb), tostring(skillRank.ore),
+		hiddenCount())
+	if filters ~= lastFilters then
+		if lastFilters then Scanner:CheckSoon() end
+		lastFilters = filters
+	end
 	updateHold()
 
 	if Scanner.lastError and Scanner.lastError ~= reportedError then

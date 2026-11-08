@@ -23,7 +23,9 @@ and puts it straight back. That is the short blink you see where your minimap si
 
 - It happens every twenty seconds, when a known spawn point comes into range (with
   GatherMate2), and for a little longer when a new node turns up — but never more
-  than once every five seconds.
+  than once every five seconds. Where GatherMate2 knows no spawn point for a node you
+  want, only once a minute.
+- Nodes your filters hide cost nothing: NodeRadar does not look for them.
 - While it is away the minimap is invisible, so nothing shows at your cursor.
 - NodeRadar only does it while your mouse rests on open world. It never gets in the
   way when you point at a monster, an NPC or a node, use a window or a bar, turn the
@@ -138,7 +140,10 @@ NodeRadar is free and stays free. If it saves you time and you'd like to say tha
     of the map fits under one, so a single reading counts every node in a square
     around the player. The presence check reads that square and one pushed to each
     side - together the whole reach - and compares the counts with what the radar
-    shows: every twenty seconds, and when a GatherMate2 spawn point comes into reach.
+    shows: every twenty seconds while a GatherMate2 spawn point of a node the
+    filters let through is in reach, once a minute otherwise, and when such a spawn
+    point comes into reach or a filter changes. Nodes the filters hide are never
+    looked for.
   - A burst of readings starts at most every five seconds. The map is resized off
     screen a frame before it goes under the cursor and stays away until the burst
     ends. Alpha does not reach the icons the client draws itself - nodes, town and

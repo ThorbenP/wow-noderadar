@@ -59,7 +59,7 @@ function Candidates:Available()
 	return GatherMate ~= nil
 end
 
-local function add(east, north, kind)
+local function add(east, north, kind, name)
 	local key = bucketKey(east, north)
 	local bucket = buckets[key]
 	if not bucket then
@@ -72,7 +72,8 @@ local function add(east, north, kind)
 			return
 		end
 	end
-	bucket[#bucket + 1] = { east = east, north = north, kind = kind, probedAt = -math.huge }
+	bucket[#bucket + 1] = { east = east, north = north, kind = kind, name = name,
+		probedAt = -math.huge }
 	Candidates.count = Candidates.count + 1
 end
 
@@ -88,7 +89,19 @@ local function zoneFrame(zone, instanceID)
 	return top, left, bottom, right
 end
 
-local function addZones(source, kind, instanceID, frames)
+-- the node's name as the minimap shows it, from GatherMate's id; nil when it has none
+local names = {}
+local function nameOf(dbType, nodeID)
+	names[dbType] = names[dbType] or {}
+	local name = names[dbType][nodeID]
+	if name == nil then
+		name = GatherMate:GetNameForNode(dbType, nodeID) or false
+		names[dbType][nodeID] = name
+	end
+	return name or nil
+end
+
+local function addZones(source, dbType, kind, instanceID, frames)
 	for zone, nodes in pairs(source) do
 		if type(zone) == "number" and type(nodes) == "table" then
 			local frame = frames[zone]
@@ -103,7 +116,7 @@ local function addZones(source, kind, instanceID, frames)
 						local x, y = decode(coord)
 						local north = frame[1] + (frame[3] - frame[1]) * y
 						local west = frame[2] + (frame[4] - frame[2]) * x
-						add(-west, north, kind)
+						add(-west, north, kind, nameOf(dbType, nodeID))
 					end
 				end
 			end
@@ -125,13 +138,13 @@ function Candidates:Prepare(instanceID)
 		local own = GatherMate.gmdbs[dbType]
 		if type(own) == "table" then
 			local base = rawget(own, "__gm2_base_storage")
-			addZones(base or own, kind, instanceID, frames)
+			addZones(base or own, dbType, kind, instanceID, frames)
 			for _, storage in pairs(rawget(own, "__gm2_storage_map") or {}) do
-				if type(storage) == "table" then addZones(storage, kind, instanceID, frames) end
+				if type(storage) == "table" then addZones(storage, dbType, kind, instanceID, frames) end
 			end
 		end
 		local data = _G[DATA_TABLES[dbType]]
-		if type(data) == "table" then addZones(data, kind, instanceID, frames) end
+		if type(data) == "table" then addZones(data, dbType, kind, instanceID, frames) end
 	end
 	local zones = 0
 	for _, frame in pairs(frames) do

@@ -23,6 +23,7 @@ local SPOT_PX = 128
 -- frame to settle - so it runs rarely. Spawn points coming into reach are read the
 -- moment they do, and a node the player gathers leaves the radar with the cast.
 local PRESENCE_INTERVAL = 20
+local IDLE_PRESENCE_INTERVAL = 60
 -- however much asks for readings, a new burst starts at most this often
 local BURST_GAP = 5
 -- how often the routine looks for spawn points that came into reach; costs no reading
@@ -35,8 +36,6 @@ local QUADRANTS = { { -1, -1 }, { 1, -1 }, { -1, 1 }, { 1, 1 } }
 local QUADRANT_OVERLAP = 1.25
 -- how far from the player, as a share of the reach, a reading point may lie
 local MAP_EDGE_SHARE = 0.97
--- a spawn point unseen in reach for this long has newly come into reach
-local ENTRY_GAP = 2
 -- a spawn point read empty is read again after this long, unless something asks sooner
 local RECHECK = 120
 -- readings spent per cycle on single spots before the presence check comes round again
@@ -69,6 +68,9 @@ local request
 local phase = "idle"
 local resumeAt = 0
 local searchFailedAt = {}
+local reachLook = 0
+-- set when the filters change: nodes they hid so far may now belong on the radar
+local checkSoon = false
 local lastReadingAt = -math.huge
 -- per presence square, the difference last logged
 local lastDifference = {}
@@ -307,6 +309,8 @@ end
 -- A name the presence square counts more often than nodes are shown: its spawn points
 -- inside the square first, then a search.
 local function findMissing(name, number, squareEast, squareNorth, half, now)
+	-- the radar would not show it; finding where it stands costs readings for nothing
+	if not world.wanted(name) then return end
 	local kind = world.kindOf(name)
 	local spent = 0
 	if spawnsUsable() then
@@ -413,8 +417,10 @@ local function window(now, label, dx, dy, half, rechecked)
 	end
 
 	for name in pairs(gone) do
+		-- a node the filters hide is left to expire rather than read again
 		for _, key in ipairs(shown(function(hit)
-			return hit.name == name and inSquare(hit, readEast, readNorth, inner)
+			return hit.name == name and world.wanted(name)
+				and inSquare(hit, readEast, readNorth, inner)
 		end)) do
 			if not rechecked[key] then
 				rechecked[key] = true
@@ -447,31 +453,42 @@ end
 -- Whether a spawn point came into reach, or was last checked long ago. The presence check
 -- that follows covers the whole reach, so each is marked as looked at; a node it shows
 -- that nobody knows of is looked for at its spawn points first.
+-- Also returns whether any spawn point in reach could hold a node the radar would show.
 local function reach(now)
 	local east, north, radius = world.position()
-	if not east or not spawnsUsable() then return false end
-	local due = false
+	if not east or not spawnsUsable() then return false, true end
+	local due, wanted = false, false
+	-- in reach now but not at the previous look, however long the routine waited between
+	reachLook = reachLook + 1
 	Candidates:Near(east, north, radius * 0.97, function(candidate)
-		local entered = now - (candidate.reachSeen or -math.huge) > ENTRY_GAP
-		candidate.reachSeen = now
+		local entered = candidate.reachLook ~= reachLook - 1
+		candidate.reachLook = reachLook
 		if not world.tracked[candidate.kind] then return end
+		-- a node the filters hide is not worth a reading
+		if candidate.name and not world.wanted(candidate.name) then return end
+		wanted = true
 		if not entered and now - (candidate.checkedAt or -math.huge) < RECHECK then return end
 		-- checked by the presence check that follows, not read at its spot
 		candidate.checkedAt = now
 		due = true
 	end)
-	return due
+	return due, wanted
 end
 
 local function track()
-	local presenceDue = 0
+	local lastPresenceAt = -math.huge
 	while true do
 		-- a burst ends when the routine waits; the next one keeps its distance
 		local rest = BURST_GAP - (GetTime() - lastReadingAt)
 		if rest > 0 then wait(rest) end
-		if reach(GetTime()) or GetTime() >= presenceDue then
+		local due, wanted = reach(GetTime())
+		-- with no spawn point in reach that could hold a shown node, nodes are unlikely;
+		-- the check then only guards against spots GatherMate does not know
+		local interval = wanted and PRESENCE_INTERVAL or IDLE_PRESENCE_INTERVAL
+		if due or checkSoon or GetTime() >= lastPresenceAt + interval then
+			checkSoon = false
 			presence(GetTime())
-			presenceDue = GetTime() + PRESENCE_INTERVAL
+			lastPresenceAt = GetTime()
 			world.cycleDone()
 		end
 		wait(REACH_INTERVAL)
@@ -495,7 +512,7 @@ end
 
 -- context: position() -> east, north, radius; isNode(name); kindOf(name); tracked, the
 -- kinds the minimap shows; hits; addHit(name, east, north, source); removeHit(key,
--- reason); cycleDone()
+-- reason); cycleDone(); wanted(name), whether the filters let such a node onto the radar
 function Scanner:Start(context)
 	world = context
 	routine = coroutine.create(track)
@@ -503,6 +520,10 @@ function Scanner:Start(context)
 	self.lastError = nil
 	lastDifference = {}
 	log("scanner started")
+end
+
+function Scanner:CheckSoon()
+	checkSoon = true
 end
 
 -- spawn points get a fresh chance in another instance
