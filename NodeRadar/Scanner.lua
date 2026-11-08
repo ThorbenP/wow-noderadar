@@ -23,7 +23,6 @@ local SPOT_PX = 128
 -- frame to settle - so it runs rarely. Spawn points coming into reach are read the
 -- moment they do, and a node the player gathers leaves the radar with the cast.
 local PRESENCE_INTERVAL = 20
-local IDLE_PRESENCE_INTERVAL = 60
 -- however much asks for readings, a new burst starts at most this often
 local BURST_GAP = 5
 -- how often the routine looks for spawn points that came into reach; costs no reading
@@ -453,11 +452,11 @@ end
 -- Whether a spawn point came into reach, or was last checked long ago. The presence check
 -- that follows covers the whole reach, so each is marked as looked at; a node it shows
 -- that nobody knows of is looked for at its spawn points first.
--- Also returns whether any spawn point in reach could hold a node the radar would show.
+-- Also returns why a node the radar would show could stand in reach, or nil.
 local function reach(now)
 	local east, north, radius = world.position()
-	if not east or not spawnsUsable() then return false, true end
-	local due, wanted = false, false
+	if not east or not spawnsUsable() then return false, "any node may stand here without spawn data" end
+	local due, wanted = false, nil
 	-- in reach now but not at the previous look, however long the routine waited between
 	reachLook = reachLook + 1
 	Candidates:Near(east, north, radius * 0.97, function(candidate)
@@ -466,13 +465,25 @@ local function reach(now)
 		if not world.tracked[candidate.kind] then return end
 		-- a node the filters hide is not worth a reading
 		if candidate.name and not world.wanted(candidate.name) then return end
-		wanted = true
+		wanted = wanted or "spawn point of " .. (candidate.name or "an unnamed node") .. " in reach"
 		if not entered and now - (candidate.checkedAt or -math.huge) < RECHECK then return end
 		-- checked by the presence check that follows, not read at its spot
 		candidate.checkedAt = now
-		due = true
+		due = due or candidate.name or "an unnamed spawn point"
 	end)
 	return due, wanted
+end
+
+-- a node on the radar within reach, as reason for checks: it may have been gathered
+local function shownWantedInReach()
+	local east, north, radius = world.position()
+	if not east then return nil end
+	for _, hit in pairs(world.hits) do
+		local dx, dy = hit.east - east, hit.north - north
+		if dx * dx + dy * dy <= radius * radius and world.wanted(hit.name) then
+			return hit.name .. " on the radar"
+		end
+	end
 end
 
 local function track()
@@ -482,10 +493,14 @@ local function track()
 		local rest = BURST_GAP - (GetTime() - lastReadingAt)
 		if rest > 0 then wait(rest) end
 		local due, wanted = reach(GetTime())
-		-- with no spawn point in reach that could hold a shown node, nodes are unlikely;
-		-- the check then only guards against spots GatherMate does not know
-		local interval = wanted and PRESENCE_INTERVAL or IDLE_PRESENCE_INTERVAL
-		if due or checkSoon or GetTime() >= lastPresenceAt + interval then
+		-- A check is worth its blink only where a node the radar would show can stand:
+		-- a spawn point of one in reach, or one already shown that may have gone.
+		local relevant = wanted or shownWantedInReach()
+		if not relevant then checkSoon = false end
+		if due or relevant and (checkSoon or GetTime() >= lastPresenceAt + PRESENCE_INTERVAL) then
+			log("check: %s", due and "spawn point of " .. due .. " came into reach"
+				or checkSoon and "the filters changed"
+				or string.format("every %d s, %s", PRESENCE_INTERVAL, relevant))
 			checkSoon = false
 			presence(GetTime())
 			lastPresenceAt = GetTime()

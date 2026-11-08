@@ -200,8 +200,9 @@ local function toFacing(east, north, facing)
 	return east * c + north * s, -east * s + north * c
 end
 
--- Nodes taken off the radar lately, other than by the player's own gathering: one found
--- again at the same spot is the same node, and is no news.
+-- Nodes taken off the radar lately: one found again at the same spot is the same node,
+-- and is no news - a vein mined once is often still there for the next swing, and
+-- nothing respawns that quickly.
 local REMEMBER_SECONDS = 120
 local SAME_SPOT = 15
 local removed = {}
@@ -210,10 +211,8 @@ local function removeHit(key, reason)
 	local hit = hits[key]
 	if not hit then return end
 	hits[key] = nil
-	if reason ~= "gathered" then
-		removed[#removed + 1] = { name = hit.name, east = hit.east, north = hit.north,
-			appearedAt = hit.appearedAt, at = GetTime(), reason = reason }
-	end
+	removed[#removed + 1] = { name = hit.name, east = hit.east, north = hit.north,
+		appearedAt = hit.appearedAt, at = GetTime(), reason = reason }
 end
 
 -- the remembered node at this spot, taken out of the memory
@@ -330,6 +329,10 @@ end
 
 -- a pause of the readings is logged when it ends, if it lasted long enough to matter
 local PAUSE_LOG_SECONDS = 2
+-- A player steering with a mouse button lets go for a moment between two presses; a
+-- burst starting in that moment blinks right after the press. Readings resume only once
+-- the cursor has stayed free this long.
+local RESUME_GRACE = 2
 local busySince, busyWhy
 
 local function cursorFree(now)
@@ -340,7 +343,7 @@ local function cursorFree(now)
 		end
 		busySince, busyWhy = now, why
 	end
-	return why == nil
+	return why == nil and now - busySince >= RESUME_GRACE
 end
 
 local function readViewRadius()
@@ -359,7 +362,7 @@ local function updateHold()
 		if Map:Hold() then
 			log("readings start, minimap %.0f px", Map:HomePixels())
 			-- a pause still running from before is not this hold's
-			busySince, busyWhy = GetTime(), nil
+			busySince, busyWhy = -math.huge, nil
 			Scanner:Start(context)
 		elseif not refusedLogged then
 			refusedLogged = true
