@@ -18,8 +18,9 @@ Made for **World of Warcraft: Forever**.
 - **Pick your herbs and ores** — one checkbox each
 - **Required skill in the minimap tooltip** — hover a node and see "Requires Mining
   (75)", coloured from red to grey
-- **Works with any minimap addon**, whatever size or skin
-- **No dependencies**, light on performance, available in all client languages
+- **Faster with GatherMate2** — if it is installed, NodeRadar checks its spawn points
+  first, including GatherMate2_Data, which it loads by itself
+- **Light on performance**, available in all client languages
 
 ## Getting started
 
@@ -57,13 +58,21 @@ NodeRadar knows all classic herbs and ores. A name it does not know yet is learn
 the first time you gather that node, and shows from then on. Also check *Which nodes*
 in the settings.
 
+**Why does my minimap blink?**
+To read a node, NodeRadar moves the minimap under your mouse cursor for a moment —
+every few seconds, and a little longer when a new node turns up. Nothing is ever
+read while the cursor is on a window, a bar, or something in the world.
+
 **Do I need GatherMate2?**
-No. NodeRadar needs no other addon.
+No. With GatherMate2 — and GatherMate2_Data, if it has spawn points for your area —
+new nodes show up sooner, because NodeRadar looks at the known spawn points first.
 
 ## Known limitations
 
 - Does not work inside instances.
-- A gathered node stays on the radar for up to half a second.
+- Nodes are only read while the mouse cursor rests on open world: not while you turn
+  the camera with a mouse button held, and not while the cursor is on a window, a bar
+  or something in the world you are pointing at.
 
 ## Bug reports and feedback
 

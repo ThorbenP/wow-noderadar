@@ -2,13 +2,16 @@
 ## Title: NodeRadar
 ## Notes: Shows the herb and ore nodes on your minimap on a radar around your character. Needs Find Herbs or Find Minerals.
 ## Author: ThPi
-## Version: 2.0.1
+## Version: 3.0.0
 ## SavedVariables: NodeRadarDB
+## OptionalDeps: GatherMate2
 ## X-Category: Map
 ## X-License: GPL-3.0-or-later
 ## X-Website: https://github.com/ThorbenP/wow-noderadar
 
 Nodes.lua
+Map.lua
+Candidates.lua
 Scanner.lua
 Radar.lua
 Filter.lua

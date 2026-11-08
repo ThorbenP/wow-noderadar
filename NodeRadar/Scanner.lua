@@ -1,310 +1,617 @@
 local ADDON, NR = ...
 
+-- What NodeRadar shows is kept true by one routine, run as a coroutine: every reading
+-- it asks for costs a frame with the minimap under the cursor, so it is written as
+-- straight code that yields until the reading is back. Nothing sweeps on a timer: a
+-- presence check every PRESENCE_INTERVAL tells whether anything changed, and only a
+-- change - or a spawn point coming into reach - buys more readings.
+
 local Scanner = {}
 NR.Scanner = Scanner
 
--- Measured on Forever 1.60.1.70450: Minimap:UpdateMouseoverAtPoint takes a point in
--- GetCursorPosition's space and moves the minimap's mouseover there within the same
--- frame; with SetUsingSoftCursor(true) it counts wherever the real cursor is, and
--- C_TooltipInfo.GetMinimapMouseover() then names every blip under that point. A
--- whole-map sweep reads synchronously in a few milliseconds and never touches the
--- minimap's position, alpha or the player's own hover.
+local Map, Candidates = NR.Map, NR.Candidates
 
--- A gathering node's hit area is a square of fixed size on screen, whatever the
--- minimap's width or zoom: measured 25 units at scale 0.640 and 22.5 units at 0.704.
+-- A gathering node's hit area is a square of this many pixels on screen, whatever the
+-- minimap's size or zoom.
 local NODE_PX = 16
--- The rest scale with it, as fractions of one node's square: the grid step never
--- passes over one, the slack absorbs the drift between the player's position and the
--- minimap within a frame, and an edge is walked in strides then halved three times.
-local STEP_SHARE = 0.56
-local NODE_SLACK_SHARE = 0.12
-local CLAIM_SLACK_SHARE = 0.16
-local STRIDE_SHARE = 0.16
-local HALVINGS = 3
--- nodes measured out of one patch of touching cells before the rest is left alone
-local PER_PATCH = 4
+-- Shrunk to this many pixels the whole map fits under one hit square, so one reading
+-- lists every node in reach, once per node. Measured: 20 px reads, 15 px reads nothing.
+local PRESENCE_PX = 21
+-- size for reading a single spot: large enough that a hit square is a few yards wide
+local SPOT_PX = 128
+-- A presence check takes the map from its place for two frames - the shrink needs a
+-- frame to settle - so it runs rarely. Spawn points coming into reach are read the
+-- moment they do, and a node the player gathers leaves the radar with the cast.
+local PRESENCE_INTERVAL = 20
+-- however much asks for readings, a new burst starts at most this often
+local BURST_GAP = 5
+-- how often the routine looks for spawn points that came into reach; costs no reading
+-- unless one did
+local REACH_INTERVAL = 0.25
+-- The search stops growing the map here; its last quadrant is then about 3 yards wide.
+-- Off screen and invisible, a map wider than the screen costs nothing visible.
+local SEARCH_MAX_PX = 1400
+local QUADRANTS = { { -1, -1 }, { 1, -1 }, { -1, 1 }, { 1, 1 } }
+local QUADRANT_OVERLAP = 1.25
+-- how far from the player, as a share of the reach, a reading point may lie
+local MAP_EDGE_SHARE = 0.97
+-- a spawn point unseen in reach for this long has newly come into reach
+local ENTRY_GAP = 2
+-- a spawn point read empty is read again after this long, unless something asks sooner
+local RECHECK = 120
+-- readings spent per cycle on single spots before the presence check comes round again
+local SPOTS_PER_CYCLE = 6
+-- a spawn point or a reading this close to a node already shown is that node, in yards
+local SAME_NODE = 15
+-- a node the search could not place is not searched for again for this long
+local SEARCH_BACKOFF = 5
+-- nodes of one name searched for in one presence burst; each search is about 20 readings
+local SEARCHES_PER_CYCLE = 4
+-- a spawn point read empty while the presence check misses a node is passed over this
+-- long, so the search gets its turn
+local SPAWN_RETRY = 15
+-- Spawn data from another world - GatherMate2_Data is mined on Retail - shows in the
+-- nodes the search finds: this many of them, none near a spawn point, and no node ever
+-- found at one, switch the spawn points off until the instance changes. Empty spawn
+-- points prove nothing; there are far more of them than nodes standing at a time.
+local SPAWN_MISMATCHES = 3
+-- part of a presence square's half width at its edge that counts neither in nor out
+local EDGE_MARGIN = 0.1
+-- readings of one point that may fail before the routine is told it did
+local TRIES = 3
 
-local function isSecret(value)
-	return issecretvalue ~= nil and issecretvalue(value)
+local world
+local routine
+local request
+-- idle; prepared: made ready off screen, goes under the cursor next frame; read: placed,
+-- read next frame; gap: one frame for the world's own mouseover
+local phase = "idle"
+local resumeAt = 0
+local searchFailedAt = {}
+local lastReadingAt = -math.huge
+-- per presence square, the difference last logged
+local lastDifference = {}
+-- invalid readings per reason since it was last logged, and when that was
+local invalidPending, invalidLoggedAt = {}, {}
+local INVALID_LOG_GAP = 10
+
+local function log(...)
+	if NR.Log then NR.Log(...) end
 end
-NR.IsSecret = isSecret
 
-Scanner.available = type(Minimap.UpdateMouseoverAtPoint) == "function"
-	and type(Minimap.SetUsingSoftCursor) == "function"
-	and C_TooltipInfo ~= nil and type(C_TooltipInfo.GetMinimapMouseover) == "function"
-
--- The client prefixes a node above or below the player with a height arrow texture
--- and colours quest lines; a node has to read the same name either way.
-function Scanner.Plain(text)
-	text = text:gsub("|T.-|t", ""):gsub("|A.-|a", ""):gsub("|H.-|h(.-)|h", "%1")
-	text = text:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", ""):gsub("|n", " ")
-	return strtrim(text)
+local function where(east, north)
+	return string.format("%.0f/%.0f", east, north)
 end
 
-local geometry
-local reads = 0
--- this sweep's sizes in map units, from the minimap's scale
-local node, step, nodeSlack, claimSlack, stride, reach
+local stats = { readings = 0, invalid = 0, presence = 0, spots = 0, searches = 0,
+	foundBySearch = 0, foundAtSpawn = 0, lost = 0, spawnReadings = 0, spawnHits = 0,
+	searchedNearSpawn = 0, searchedFarFromSpawn = 0, invalidWhy = {} }
+local spawnsDistrusted = false
 
--- Every name under a point. A secret answer means the client is withholding the
--- minimap right now, so it aborts the whole sweep rather than reading as empty.
-local function namesAt(x, y)
-	reads = reads + 1
-	Minimap:UpdateMouseoverAtPoint((geometry.cx + x) * geometry.scale,
-		(geometry.cy + y) * geometry.scale)
-	local data = C_TooltipInfo.GetMinimapMouseover()
-	if data == nil then return nil end
-	if isSecret(data) or type(data) ~= "table" or isSecret(data.lines) then
-		error("the minimap mouseover reads secret", 0)
+local function spawnsUsable()
+	return Candidates:Available() and not spawnsDistrusted
+end
+
+-- counts one reading at a spawn point and how many nodes it found
+local function judgeSpawns(found)
+	stats.spawnReadings = stats.spawnReadings + 1
+	stats.spawnHits = stats.spawnHits + found
+end
+
+-- the distance from a searched node to the nearest spawn point of its kind, or nil
+local function spawnDistance(kind, east, north)
+	local best
+	Candidates:Near(east, north, SAME_NODE * 4, function(candidate, dx, dy)
+		local distance = math.sqrt(dx * dx + dy * dy)
+		if candidate.kind == kind and (not best or distance < best) then best = distance end
+	end)
+	return best
+end
+
+local function judgeSearched(kind, east, north)
+	if not Candidates:Available() or spawnsDistrusted then return end
+	local distance = spawnDistance(kind, east, north)
+	if distance and distance <= SAME_NODE then
+		stats.searchedNearSpawn = stats.searchedNearSpawn + 1
+	else
+		stats.searchedFarFromSpawn = stats.searchedFarFromSpawn + 1
 	end
-	if type(data.lines) ~= "table" then return nil end
-
-	local names
-	for _, line in ipairs(data.lines) do
-		local text = type(line) == "table" and line.leftText or nil
-		if isSecret(text) then error("a minimap mouseover line reads secret", 0) end
-		if type(text) == "string" then
-			for row in text:gmatch("[^\n]+") do
-				local name = Scanner.Plain(row)
-				if name ~= "" then
-					names = names or {}
-					names[#names + 1] = name
-				end
-			end
-		end
+	if stats.searchedFarFromSpawn >= SPAWN_MISMATCHES and stats.searchedNearSpawn == 0
+		and stats.spawnHits == 0 then
+		spawnsDistrusted = true
+		log("spawn points switched off: %d nodes found by search, none near a spawn point - "
+			.. "the data does not match this world", stats.searchedFarFromSpawn)
 	end
-	return names
+end
+Scanner.stats = stats
+Scanner.lastPresence = {}
+
+-- yards per map unit, and the half width of a hit square in yards, on a map `pixels`
+-- across that shows `radius` yards each way
+local function geometry(pixels, radius)
+	local units = pixels / Minimap:GetEffectiveScale()
+	local yardsPerUnit = radius / (units / 2)
+	return yardsPerUnit, NODE_PX / 2 / Minimap:GetEffectiveScale() * yardsPerUnit
 end
 
-local function readsName(x, y, name)
-	local names = namesAt(x, y)
-	if not names then return false end
-	for _, found in ipairs(names) do
-		if found == name then return true end
+-- Inside the routine: one reading of the point (east, north) - the player when nil - on
+-- a map `pixels` across. Returns the names and the world point actually read, or nil
+-- when the reading did not count.
+local function sample(pixels, east, north)
+	return coroutine.yield("sample", pixels, east, north)
+end
+
+local function wait(seconds)
+	coroutine.yield("wait", seconds)
+end
+
+local function count(names, wanted)
+	local total = 0
+	for _, name in ipairs(names) do
+		if name == wanted then total = total + 1 end
 	end
-	return false
+	return total
 end
 
--- Distance from (x, y) along (dx, dy) to where the name stops, or nil when it never
--- stops within reach.
-local function edge(x, y, dx, dy, name)
-	local inside, outside = 0, nil
-	for distance = stride, reach, stride do
-		if not readsName(x + dx * distance, y + dy * distance, name) then
-			outside = distance
-			break
-		end
-		inside = distance
-	end
-	if not outside then return nil end
-	for _ = 1, HALVINGS do
-		local middle = (inside + outside) / 2
-		if readsName(x + dx * middle, y + dy * middle, name) then
-			inside = middle
-		else
-			outside = middle
-		end
-	end
-	return (inside + outside) / 2
+local function inSquare(point, east, north, half)
+	return math.abs(point.east - east) <= half and math.abs(point.north - north) <= half
 end
 
--- Centre of one axis of the square containing the seed. A span wider than one square
--- is two nodes overlapping; the seed belongs to the one whose edge is nearer.
-local function axisCentre(seed, low, high)
-	local span = low + high
-	if span > node + nodeSlack then
-		if low <= high then return seed - low + node / 2 end
-		return seed + high - node / 2
-	end
-	return seed + (high - low) / 2
-end
-
-local function measure(seed, name)
-	local right = edge(seed.x, seed.y, 1, 0, name)
-	local left = right and edge(seed.x, seed.y, -1, 0, name)
-	local up = left and edge(seed.x, seed.y, 0, 1, name)
-	local down = up and edge(seed.x, seed.y, 0, -1, name)
-	if not down then return nil end
-
-	local x = axisCentre(seed.x, left, right)
-	local y = axisCentre(seed.y, down, up)
-	if not readsName(x, y, name) then return nil end
-	return x, y
-end
-
-local function explains(found, cell)
-	local half = node / 2 + claimSlack
-	return math.abs(found.x - cell.x) <= half and math.abs(found.y - cell.y) <= half
-end
-
--- Touching cells (eight neighbours) of one name form a patch.
-local function patches(cells)
-	local list, seen = {}, {}
-	for key, cell in pairs(cells) do
-		if not seen[key] then
-			local members, stack = {}, { cell }
-			seen[key] = true
-			while #stack > 0 do
-				local current = table.remove(stack)
-				members[#members + 1] = current
-				for dc = -1, 1 do
-					for dr = -1, 1 do
-						local neighbourKey = (current.col + dc) .. ":" .. (current.row + dr)
-						local neighbour = cells[neighbourKey]
-						if neighbour and not seen[neighbourKey] then
-							seen[neighbourKey] = true
-							stack[#stack + 1] = neighbour
-						end
-					end
-				end
-			end
-			list[#list + 1] = members
-		end
+-- the shown nodes matching `test`, as a list: the routine yields while walking it, and a
+-- table must not be walked across a yield while others change it
+local function shown(test)
+	local list = {}
+	for key, hit in pairs(world.hits) do
+		if test(hit) then list[#list + 1] = key end
 	end
 	return list
 end
 
--- Cells no node explains, and the one nearest their middle as the next seed.
-local function unexplained(cells, nodes)
-	local left = {}
-	for _, cell in ipairs(cells) do
-		local claimed = false
-		for _, found in ipairs(nodes) do
-			if explains(found, cell) then
-				claimed = true
-				break
-			end
-		end
-		if not claimed then left[#left + 1] = cell end
-	end
-	return left
-end
-
-local function middleCell(cells)
-	local sumX, sumY = 0, 0
-	for _, cell in ipairs(cells) do
-		sumX, sumY = sumX + cell.x, sumY + cell.y
-	end
-	local mx, my = sumX / #cells, sumY / #cells
+local function nearestHit(name, east, north)
 	local best, bestDistance
-	for index, cell in ipairs(cells) do
-		local distance = (cell.x - mx) ^ 2 + (cell.y - my) ^ 2
-		if not bestDistance or distance < bestDistance then
-			best, bestDistance = index, distance
+	for key, hit in pairs(world.hits) do
+		if hit.name == name then
+			local distance = math.max(math.abs(hit.east - east), math.abs(hit.north - north))
+			if distance <= SAME_NODE and (not bestDistance or distance < bestDistance) then
+				best, bestDistance = key, distance
+			end
 		end
 	end
 	return best
 end
 
-local function readGeometry()
-	local left, bottom, width, height = Minimap:GetRect()
-	local scale = Minimap:GetEffectiveScale()
-	for _, value in ipairs({ left, bottom, width, height, scale }) do
-		if type(value) ~= "number" or isSecret(value) then return nil end
+local function nearAnyHit(kind, east, north)
+	for _, hit in pairs(world.hits) do
+		if hit.kind == kind and math.abs(hit.east - east) <= SAME_NODE
+			and math.abs(hit.north - north) <= SAME_NODE then
+			return true
+		end
 	end
-	if width <= 0 or height <= 0 then return nil end
-	return { cx = left + width / 2, cy = bottom + height / 2, half = width / 2,
-		scale = scale, square = GetMinimapShape and GetMinimapShape() == "SQUARE" }
+	return false
 end
 
--- Leaves the mouseover where the player's cursor is when it is on the minimap, so
--- their own hover tooltip carries on, and off the map otherwise.
-local function putBack()
-	local x, y = GetCursorPosition()
-	local over = Minimap:IsMouseOver()
-	if isSecret(x) or isSecret(y) or isSecret(over) or not over then
-		x = (geometry.cx - geometry.half * 4) * geometry.scale
-		y = (geometry.cy - geometry.half * 4) * geometry.scale
-	end
-	Minimap:UpdateMouseoverAtPoint(x, y)
+local function readSpot(east, north)
+	local names = sample(SPOT_PX, east, north)
+	if names then stats.spots = stats.spots + 1 end
+	return names
 end
 
-local function sweep(isNode, known, result)
-	local half = geometry.half
-	local radius = (half + step / 2) ^ 2
-	local cells = {}
-	local row = 0
-	for y = -half + step / 2, half, step do
-		local col = 0
-		for x = -half + step / 2, half, step do
-			if geometry.square or x * x + y * y <= radius then
-				local names = namesAt(x, y)
-				for _, name in ipairs(names or {}) do
-					result.names[name] = (result.names[name] or 0) + 1
-					if isNode(name) then
-						cells[name] = cells[name] or {}
-						cells[name][col .. ":" .. row] = { x = x, y = y, col = col, row = row }
-					end
-				end
-			end
-			col = col + 1
-		end
-		row = row + 1
-	end
-
-	for name, byKey in pairs(cells) do
-		local mine = {}
-		for _, candidate in ipairs(known) do
-			if candidate.name == name then mine[#mine + 1] = candidate end
-		end
-
-		for _, patch in ipairs(patches(byKey)) do
-			for _, candidate in ipairs(mine) do
-				if not result.present[candidate.ref] then
-					for _, cell in ipairs(patch) do
-						if explains(candidate, cell) then
-							result.present[candidate.ref] = true
-							break
-						end
-					end
-				end
-			end
-
-			local measured = {}
-			local left = unexplained(patch, mine)
-			while #left > 0 and #measured < PER_PATCH do
-				local seedIndex = middleCell(left)
-				local x, y = measure(left[seedIndex], name)
-				if x then
-					local found = { name = name, x = x, y = y }
-					measured[#measured + 1] = found
-					result.found[#result.found + 1] = found
-					mine[#mine + 1] = found
-					left = unexplained(left, { found })
-				else
-					result.unmeasured = result.unmeasured + 1
-					table.remove(left, seedIndex)
-				end
+-- Confirms or adds every node a spot reading names. Returns how many were new.
+local function settleSpot(names, east, north, now, source)
+	local added = 0
+	for _, name in ipairs(names) do
+		if world.isNode(name) then
+			local key = nearestHit(name, east, north)
+			if key then
+				world.hits[key].seenAt = now
+			else
+				world.addHit(name, east, north, source)
+				added = added + 1
 			end
 		end
 	end
+	return added
 end
 
--- One look at the whole minimap. isNode(name) says which names are worth locating;
--- known holds nodes already located, as { name, x, y, ref } in map units from the
--- centre, and is only confirmed, never measured again. Returns { present = { [ref] =
--- true }, found = { { name, x, y } }, names = { [name] = cells }, reads, ms,
--- unmeasured, half } or nil and why. The soft cursor is switched off on every path.
-function Scanner:Sweep(isNode, known)
-	geometry = readGeometry()
-	if not geometry then return nil, "the minimap's geometry is unreadable" end
-	node = NODE_PX / geometry.scale
-	step, nodeSlack = node * STEP_SHARE, node * NODE_SLACK_SHARE
-	claimSlack, stride = node * CLAIM_SLACK_SHARE, node * STRIDE_SHARE
-	-- two squares side by side; a name reading further than that is a chain of nodes
-	reach = node * 2 + stride
+-- Reads a shown node's spot: confirmed when its name is there, removed when it is not.
+local function recheck(key, now)
+	local hit = world.hits[key]
+	if not hit then return end
+	local names = readSpot(hit.east, hit.north)
+	if not names or not world.hits[key] then return end
+	if count(names, hit.name) > 0 then
+		hit.seenAt = now
+	else
+		log("gone: %s at %s - its spot reads [%s]", hit.name, where(hit.east, hit.north),
+			table.concat(names, ", "))
+		world.removeHit(key, "gone")
+		stats.lost = stats.lost + 1
+	end
+end
 
-	local result = { present = {}, found = {}, names = {}, unmeasured = 0,
-		half = geometry.half }
-	reads = 0
-	local started = debugprofilestop()
-	Minimap:SetUsingSoftCursor(true)
-	local ok, err = pcall(sweep, isNode, known, result)
-	pcall(putBack)
-	Minimap:SetUsingSoftCursor(false)
-	if not ok then return nil, tostring(err) end
+-- Quadtree search for one node of `name` inside the square of half width `half` around
+-- (east, north) that no shown node accounts for. Each quadrant is read with a hit square
+-- its size and a quarter more - the map grows to make it so - and the shown nodes inside
+-- are subtracted: a quadrant with a count left over holds a missing node.
+local function search(name, east, north, half)
+	stats.searches = stats.searches + 1
+	local readings = 0
+	local function fail(why)
+		log("search for %s failed after %d readings: %s", name, readings, why)
+	end
+	while true do
+		local _, _, radius = world.position()
+		if not radius then return fail("no position") end
+		local quarter = half / 2
+		-- each quadrant is read a little wider than it is, so a node on a border - as
+		-- one beside the player is, where the centre square's quadrants meet - lies
+		-- well inside at least one of them
+		local reach = quarter * QUADRANT_OVERLAP
+		-- the hit square's half width is NODE_PX * radius / pixels yards
+		local pixels = NODE_PX * radius / reach
+		if pixels > SEARCH_MAX_PX then break end
+		local playerEast, playerNorth = world.position()
+		local edge = radius * MAP_EDGE_SHARE
+		local chosenEast, chosenNorth
+		for _, corner in ipairs(QUADRANTS) do
+			-- a widened quadrant can reach past the map's edge, where a reading falls off the
+			-- map; no node lies beyond the reach, so it is pulled back inside
+			local quadrantEast = math.max(playerEast - edge, math.min(playerEast + edge,
+				east + corner[1] * quarter))
+			local quadrantNorth = math.max(playerNorth - edge, math.min(playerNorth + edge,
+				north + corner[2] * quarter))
+			local names, readEast, readNorth = sample(pixels, quadrantEast, quadrantNorth)
+			readings = readings + 1
+			if not names then return fail("a reading did not count") end
+			local accounted = 0
+			for _, hit in pairs(world.hits) do
+				if hit.name == name and inSquare(hit, readEast, readNorth, reach) then
+					accounted = accounted + 1
+				end
+			end
+			if count(names, name) > accounted then
+				chosenEast, chosenNorth = quadrantEast, quadrantNorth
+				break
+			end
+		end
+		if not chosenEast then
+			return fail(string.format("no quadrant of %s +-%.0f holds it", where(east, north), half))
+		end
+		east, north, half = chosenEast, chosenNorth, reach
+	end
 
-	result.reads = reads
-	result.ms = debugprofilestop() - started
-	return result
+	local names = readSpot(east, north)
+	readings = readings + 1
+	if not names or count(names, name) == 0 then
+		return fail("the spot at " .. where(east, north) .. " does not read it")
+	end
+	log("search placed %s at %s in %d readings", name, where(east, north), readings)
+	return east, north
+end
+
+-- A spawn point of the same kind near a searched position is where the node really is.
+local function snap(kind, east, north)
+	if not spawnsUsable() then return east, north end
+	local best, bestDistance
+	Candidates:Near(east, north, SAME_NODE, function(candidate, dx, dy)
+		local distance = dx * dx + dy * dy
+		if candidate.kind == kind and (not bestDistance or distance < bestDistance) then
+			best, bestDistance = candidate, distance
+		end
+	end)
+	if best then return best.east, best.north end
+	return east, north
+end
+
+-- A name the presence square counts more often than nodes are shown: its spawn points
+-- inside the square first, then a search.
+local function findMissing(name, number, squareEast, squareNorth, half, now)
+	local kind = world.kindOf(name)
+	local spent = 0
+	if spawnsUsable() then
+		local open = {}
+		Candidates:Near(squareEast, squareNorth, half * 1.5, function(candidate, dx, dy)
+			if candidate.kind == kind and math.abs(dx) <= half and math.abs(dy) <= half
+				and now - candidate.probedAt >= SPAWN_RETRY
+				and not nearAnyHit(kind, candidate.east, candidate.north) then
+				candidate.distance = dx * dx + dy * dy
+				open[#open + 1] = candidate
+			end
+		end)
+		table.sort(open, function(a, b)
+			if a.probedAt ~= b.probedAt then return a.probedAt < b.probedAt end
+			return a.distance < b.distance
+		end)
+		for _, candidate in ipairs(open) do
+			if number <= 0 or spent >= SPOTS_PER_CYCLE then break end
+			local names = readSpot(candidate.east, candidate.north)
+			spent = spent + 1
+			if names then
+				candidate.probedAt = now
+				local added = 0
+				if count(names, name) > 0 then
+					added = settleSpot(names, candidate.east, candidate.north, now, "spawn point")
+					stats.foundAtSpawn = stats.foundAtSpawn + added
+					number = number - added
+				end
+				judgeSpawns(added)
+			end
+		end
+	end
+
+	-- the spawn points are spent for now; each search finds one node they miss, and the
+	-- presence check comes round too rarely to leave the rest for later
+	if now - (searchFailedAt[name] or -math.huge) <= SEARCH_BACKOFF then return end
+	for _ = 1, math.min(number, SEARCHES_PER_CYCLE) do
+		local east, north = search(name, squareEast, squareNorth, half)
+		if not east then
+			searchFailedAt[name] = now
+			return
+		end
+		judgeSearched(kind, east, north)
+		east, north = snap(kind, east, north)
+		if nearestHit(name, east, north) then return end
+		world.addHit(name, east, north, "search")
+		stats.foundBySearch = stats.foundBySearch + 1
+	end
+end
+
+-- One presence reading of the square of half width `half` centred `dx`, `dy` yards from
+-- the player, set against the nodes shown inside it. `rechecked` collects the shown nodes
+-- already read again during this check, as the squares overlap.
+local function window(now, label, dx, dy, half, rechecked)
+	local east, north = world.position()
+	if not east then return end
+	local names, readEast, readNorth = sample(PRESENCE_PX, east + dx, north + dy)
+	if not names then return end
+	stats.presence = stats.presence + 1
+	local inner, outer = half * (1 - EDGE_MARGIN), half * (1 + EDGE_MARGIN)
+
+	local seen = {}
+	for _, name in ipairs(names) do
+		if world.isNode(name) then seen[name] = (seen[name] or 0) + 1 end
+	end
+	if label == "centre" then Scanner.lastPresence = seen end
+
+	local shownInner, shownOuter = {}, {}
+	for _, hit in pairs(world.hits) do
+		if inSquare(hit, readEast, readNorth, outer) then
+			shownOuter[hit.name] = (shownOuter[hit.name] or 0) + 1
+			if inSquare(hit, readEast, readNorth, inner) then
+				shownInner[hit.name] = (shownInner[hit.name] or 0) + 1
+			end
+		end
+	end
+
+	local gone = {}
+	for name, total in pairs(shownInner) do
+		if (seen[name] or 0) < total then gone[name] = true end
+	end
+	for _, hit in pairs(world.hits) do
+		if not gone[hit.name] and inSquare(hit, readEast, readNorth, inner) then
+			hit.seenAt = now
+		end
+	end
+
+	-- a difference is logged when it changes, not on every check it persists
+	local differences = {}
+	for name, total in pairs(seen) do
+		if total ~= (shownOuter[name] or 0) then
+			differences[#differences + 1] = string.format("%s seen %d shown %d", name, total,
+				shownOuter[name] or 0)
+		end
+	end
+	for name, total in pairs(shownInner) do
+		if not seen[name] then differences[#differences + 1] = name .. " seen 0 shown " .. total end
+	end
+	table.sort(differences)
+	local summary = table.concat(differences, "; ")
+	if summary ~= lastDifference[label] then
+		lastDifference[label] = summary
+		log("presence %s: %s", label, summary ~= "" and summary or "matches the radar")
+	end
+
+	for name in pairs(gone) do
+		for _, key in ipairs(shown(function(hit)
+			return hit.name == name and inSquare(hit, readEast, readNorth, inner)
+		end)) do
+			if not rechecked[key] then
+				rechecked[key] = true
+				recheck(key, now)
+			end
+		end
+	end
+	for name, total in pairs(seen) do
+		local missing = total - (shownOuter[name] or 0)
+		if missing > 0 then findMissing(name, missing, readEast, readNorth, half, now) end
+	end
+end
+
+-- The presence check: one square on the player and one pushed to each side, as far as
+-- the map reaches. Together they cover the whole reach - its corners lie beyond the
+-- radius - while every reading stays on the map.
+local function presence(now)
+	local _, _, radius = world.position()
+	if not radius then return end
+	local _, half = geometry(PRESENCE_PX, radius)
+	local side = radius - half
+	local rechecked = {}
+	window(now, "centre", 0, 0, half, rechecked)
+	window(now, "east", side, 0, half, rechecked)
+	window(now, "west", -side, 0, half, rechecked)
+	window(now, "north", 0, side, half, rechecked)
+	window(now, "south", 0, -side, half, rechecked)
+end
+
+-- Whether a spawn point came into reach, or was last checked long ago. The presence check
+-- that follows covers the whole reach, so each is marked as looked at; a node it shows
+-- that nobody knows of is looked for at its spawn points first.
+local function reach(now)
+	local east, north, radius = world.position()
+	if not east or not spawnsUsable() then return false end
+	local due = false
+	Candidates:Near(east, north, radius * 0.97, function(candidate)
+		local entered = now - (candidate.reachSeen or -math.huge) > ENTRY_GAP
+		candidate.reachSeen = now
+		if not world.tracked[candidate.kind] then return end
+		if not entered and now - (candidate.checkedAt or -math.huge) < RECHECK then return end
+		-- checked by the presence check that follows, not read at its spot
+		candidate.checkedAt = now
+		due = true
+	end)
+	return due
+end
+
+local function track()
+	local presenceDue = 0
+	while true do
+		-- a burst ends when the routine waits; the next one keeps its distance
+		local rest = BURST_GAP - (GetTime() - lastReadingAt)
+		if rest > 0 then wait(rest) end
+		if reach(GetTime()) or GetTime() >= presenceDue then
+			presence(GetTime())
+			presenceDue = GetTime() + PRESENCE_INTERVAL
+			world.cycleDone()
+		end
+		wait(REACH_INTERVAL)
+	end
+end
+
+-- The player gathered `name`: the nearest shown node of that name within reach of the
+-- cast leaves the radar at once rather than at the next presence check.
+local GATHER_REACH = 15
+function Scanner:Gathered(name)
+	if not world then return end
+	local east, north = world.position()
+	if not east then return end
+	local key = nearestHit(name, east, north)
+	local hit = key and world.hits[key]
+	if hit and math.abs(hit.east - east) <= GATHER_REACH and math.abs(hit.north - north) <= GATHER_REACH then
+		log("gathered: %s at %s", name, where(hit.east, hit.north))
+		world.removeHit(key, "gathered")
+	end
+end
+
+-- context: position() -> east, north, radius; isNode(name); kindOf(name); tracked, the
+-- kinds the minimap shows; hits; addHit(name, east, north, source); removeHit(key,
+-- reason); cycleDone()
+function Scanner:Start(context)
+	world = context
+	routine = coroutine.create(track)
+	request, phase, resumeAt = nil, "idle", 0
+	self.lastError = nil
+	lastDifference = {}
+	log("scanner started")
+end
+
+-- spawn points get a fresh chance in another instance
+function Scanner:TrustSpawns()
+	spawnsDistrusted = false
+	stats.spawnReadings, stats.spawnHits = 0, 0
+	stats.searchedNearSpawn, stats.searchedFarFromSpawn = 0, 0
+end
+
+function Scanner:SpawnsDistrusted()
+	return spawnsDistrusted
+end
+
+function Scanner:Stop()
+	routine, request, phase = nil, nil, "idle"
+end
+
+function Scanner:IsRunning()
+	return routine ~= nil
+end
+
+local function resume(...)
+	local ok, kind, a, b, c = coroutine.resume(routine, ...)
+	if not ok then
+		routine, request = nil, nil
+		Scanner.lastError = tostring(kind)
+		log("scanner error: %s", Scanner.lastError)
+		return
+	end
+	if kind == "wait" then
+		request, resumeAt = nil, GetTime() + a
+	else
+		request = { pixels = a, east = b, north = c, tries = 0 }
+	end
+end
+
+local function place()
+	local east, north, radius = world.position()
+	if not east then return false end
+	local yardsPerUnit = geometry(request.pixels, radius)
+	local ox = request.east and (request.east - east) / yardsPerUnit or 0
+	local oy = request.north and (request.north - north) / yardsPerUnit or 0
+	Map:Place(ox, oy)
+	return true
+end
+
+-- Between two readings of a burst the map stays away, parked off the cursor: one short
+-- absence from its place instead of a flicker, and no resize to settle again. After the
+-- last reading it goes home.
+local function collect()
+	local names, why = Map:Read()
+	local east, north, radius = world.position()
+	local ox, oy = Map:CursorOffset()
+	phase = "gap"
+	stats.readings = stats.readings + 1
+	lastReadingAt = GetTime()
+	if names and east then
+		local yardsPerUnit = geometry(request.pixels, radius)
+		resume(names, east + ox * yardsPerUnit, north + oy * yardsPerUnit)
+		Map:Park(request ~= nil)
+		return
+	end
+	Map:Park(true)
+	why = why or "no position"
+	stats.invalid = stats.invalid + 1
+	stats.invalidWhy[why] = (stats.invalidWhy[why] or 0) + 1
+	invalidPending[why] = (invalidPending[why] or 0) + 1
+	local now = GetTime()
+	if now - (invalidLoggedAt[why] or -math.huge) >= INVALID_LOG_GAP then
+		log("reading did not count (%dx since last logged): %s", invalidPending[why], why)
+		invalidPending[why], invalidLoggedAt[why] = 0, now
+	end
+	request.tries = request.tries + 1
+	if request.tries >= TRIES then
+		resume(nil)
+		Map:Park(request ~= nil)
+	end
+end
+
+-- Called every frame while the map is held. `free` says whether the cursor may take the
+-- map now; a reading already placed is collected either way.
+function Scanner:Step(free)
+	if not routine then return end
+	if phase == "read" then return collect() end
+	if phase == "gap" then
+		phase = "idle"
+		return
+	end
+	if phase == "prepared" then
+		if free and place() then
+			phase = "read"
+		else
+			Map:Park(false)
+			phase = "idle"
+		end
+		return
+	end
+	-- a burst the cursor interrupts must not keep the map from its place
+	if not free and Map:IsAway() then Map:Park(false) end
+
+	if not request then
+		if GetTime() < resumeAt then return end
+		resume()
+		if not request then return end
+	end
+	if not free then return end
+	if Map:Ready(request.pixels) then
+		if place() then phase = "read" end
+	else
+		Map:Prepare(request.pixels)
+		phase = "prepared"
+	end
 end

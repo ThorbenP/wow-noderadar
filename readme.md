@@ -19,8 +19,9 @@ by version 1.2.1.
 - **Pick your herbs and ores** — one checkbox each
 - **Required skill in the minimap tooltip** — hover a node and see "Requires Mining
   (75)", coloured from red to grey
-- **Works with any minimap addon**, whatever size or skin
-- **No dependencies**, light on performance, available in all client languages
+- **Faster with GatherMate2** — if it is installed, NodeRadar checks its spawn points
+  first, including GatherMate2_Data, which it loads by itself
+- **Light on performance**, available in all client languages
 
 ## Installation
 
@@ -62,13 +63,21 @@ NodeRadar knows all classic herbs and ores. A name it does not know yet is learn
 the first time you gather that node, and shows from then on. Also check *Which nodes*
 in the settings.
 
+**Why does my minimap blink?**
+To read a node, NodeRadar moves the minimap under your mouse cursor for a moment —
+every few seconds, and a little longer when a new node turns up. Nothing is ever
+read while the cursor is on a window, a bar, or something in the world.
+
 **Do I need GatherMate2?**
-No. NodeRadar needs no other addon.
+No. With GatherMate2 — and GatherMate2_Data, if it has spawn points for your area —
+new nodes show up sooner, because NodeRadar looks at the known spawn points first.
 
 ## Known limitations
 
 - Does not work inside instances.
-- A gathered node stays on the radar for up to half a second.
+- Nodes are only read while the mouse cursor rests on open world: not while you turn
+  the camera with a mouse button held, and not while the cursor is on a window, a bar
+  or something in the world you are pointing at.
 
 ## Bug reports and feedback
 
@@ -85,11 +94,30 @@ NodeRadar is free and stays free. If it saves you time and you'd like to say tha
 - `just sync [flavor]` copies the addon into the local game folder (`forever` by
   default); `/reload` in game picks it up.
 - `just build` packages `dist/NodeRadar-v<version>.zip` for upload.
-- How it reads the minimap: twice a second it moves the minimap's mouseover across a
-  grid with `Minimap:UpdateMouseoverAtPoint` (soft cursor on, so the real cursor can
-  be anywhere) and reads the names with `C_TooltipInfo.GetMinimapMouseover`. A new
-  node's hit square — a fixed 16 screen pixels — is measured edge to edge once, then
-  the node is kept in world coordinates.
+- How it reads the minimap: Forever lets addons read the minimap's mouseover only
+  under the real cursor (`Minimap:UpdateMouseoverAtPoint` was disabled in build
+  70862), and resolves it once per frame. So for one reading NodeRadar moves the
+  minimap — invisible, its icons shrunk, addon pins switched off — under the resting
+  cursor and reads `C_TooltipInfo.GetMinimapMouseover` the next frame; the map is back in its
+  place once a burst of readings ends. Other minimap addons' hooks are bypassed with
+  the frame type's own methods.
+  - A node's hit square is a fixed 16 screen pixels. Shrunk to about 21 pixels most
+    of the map fits under one, so a single reading counts every node in a square
+    around the player. The presence check reads that square and one pushed to each
+    side - together the whole reach - and compares the counts with what the radar
+    shows: every twenty seconds, and when a GatherMate2 spawn point comes into reach.
+  - A burst of readings starts at most every five seconds. The map is resized off
+    screen a frame before it goes under the cursor and stays away until the burst
+    ends. Alpha does not reach the icons the client draws itself - nodes, town and
+    quest markers, the player arrow - so `SetIconScale` shrinks them out of sight
+    while the map is away.
+  - Only a difference costs more readings: known spawn points from GatherMate2 first,
+    otherwise a quadtree search whose quadrants are each read with a hit square a
+    quarter wider than they are, on a map that grows to 1400 pixels for the last
+    steps.
+  - A successful gathering cast removes its node at once. A node found again where
+    one was taken off the radar within two minutes is the same node, without sound
+    or highlight. Nodes are kept in world coordinates.
 
 ## Credits and licence
 

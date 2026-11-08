@@ -114,7 +114,8 @@ local function buildWindow()
 	note:SetWidth(420)
 	note:SetJustifyH("LEFT")
 	note:SetText("Shows the herb and ore nodes on your minimap on a radar around your "
-		.. "character. Needs Find Herbs or Find Minerals to be active.")
+		.. "character. Needs Find Herbs or Find Minerals to be active. To read a node the "
+		.. "minimap leaves its place for a moment.")
 
 	local controls = {}
 	local function add(control) controls[#controls + 1] = control end
