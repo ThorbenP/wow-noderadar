@@ -25,7 +25,8 @@ and puts it straight back. That is the short blink you see where your minimap si
   than once every five seconds.
 - With GatherMate2, NodeRadar only looks where a node you want can spawn: no spawn
   point of one in range and none on the radar, no blink at all. Nodes your filters
-  hide cost nothing.
+  hide cost nothing. Where GatherMate2's spawn points turn out not to match a zone,
+  NodeRadar ignores them there and checks every twenty seconds.
 - While it is away the minimap is invisible, so nothing shows at your cursor.
 - NodeRadar only does it while your mouse rests on open world. It never gets in the
   way when you point at a monster, an NPC or a node, use a window or a bar, turn the

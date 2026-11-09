@@ -109,6 +109,61 @@ local function mute(frame, depth)
 	end
 end
 
+local function anchorsOf(frame)
+	local list = {}
+	for index = 1, frame:GetNumPoints() do list[index] = { frame:GetPoint(index) } end
+	return list
+end
+
+local function sameAnchors(a, b)
+	if #a ~= #b then return false end
+	for index, point in ipairs(a) do
+		for field = 1, 5 do
+			if point[field] ~= b[index][field] then return false end
+		end
+	end
+	return true
+end
+
+-- up to a few frame names for the log; map pins come by the hundred and mostly unnamed
+local LOGGED_NAMES = 3
+
+local function summary(frames)
+	local names = {}
+	for _, frame in ipairs(frames) do
+		local name = frame:GetName()
+		if type(name) == "string" and not isSecret(name) and #names < LOGGED_NAMES then
+			names[#names + 1] = name
+		end
+	end
+	return string.format("%d (%s%s)", #frames, table.concat(names, ", "),
+		#frames > #names and ", ..." or "")
+end
+
+-- LibDBIcon and SexyMap place a minimap button - HereBeDragons a map pin - at an offset
+-- worked out from the map's width at that moment; one placed while the map is shrunk for
+-- a reading would stay off its place, so it gets back the anchor it had before.
+local function restoreButtons()
+	local moved, appeared = {}, {}
+	for child, before in pairs(held.buttons) do
+		if not sameAnchors(before, anchorsOf(child)) then
+			child:ClearAllPoints()
+			for _, point in ipairs(before) do child:SetPoint(unpack(point)) end
+			moved[#moved + 1] = child
+		end
+	end
+	for _, child in ipairs({ Minimap:GetChildren() }) do
+		if not held.buttons[child] then appeared[#appeared + 1] = child end
+	end
+	wipe(held.buttons)
+	if not NR.Log then return end
+	if #moved > 0 then NR.Log("minimap frames put back after the reading: %s", summary(moved)) end
+	if #appeared > 0 then
+		NR.Log("minimap frames that appeared during the reading, maybe off their place: %s",
+			summary(appeared))
+	end
+end
+
 local function applyIconScale(shrunk)
 	if type(Minimap.SetIconScale) ~= "function" or shrunk == iconHidden then return end
 	if shrunk then
@@ -124,8 +179,8 @@ end
 -- it can sit anywhere, deaf to clicks and the wheel - which would ping or zoom - but not
 -- to hover, which is what produces the mouseover.
 local function goAway()
-	held.points = {}
-	for index = 1, Minimap:GetNumPoints() do held.points[index] = { Minimap:GetPoint(index) } end
+	held.points = anchorsOf(Minimap)
+	for _, child in ipairs({ Minimap:GetChildren() }) do held.buttons[child] = anchorsOf(child) end
 	held.width, held.height = Minimap:GetSize()
 	held.ownAlpha = Minimap:GetAlpha()
 	held.strata = Minimap:GetFrameStrata()
@@ -164,6 +219,7 @@ local function comeHome()
 	for region in pairs(held.alpha) do region:SetIgnoreParentAlpha(true) end
 	wipe(held.mouse)
 	wipe(held.alpha)
+	restoreButtons()
 	held.away = false
 	held.homeAt = GetTime()
 	-- The client applies the home size a frame late, and a refresh now alone left the
@@ -174,16 +230,9 @@ local function comeHome()
 	C_Timer.After(BLIP_REFRESH_DELAY, refreshBlips)
 end
 
--- After a reading: off screen while another one follows, otherwise back in its own
--- place, as the player left it.
-function Map:Park(stayAway)
-	if not held.away then return end
-	if stayAway then
-		call("ClearAllPoints")
-		call("SetPoint", "CENTER", UIParent, "BOTTOMLEFT", PARK, PARK)
-	else
-		comeHome()
-	end
+-- After a burst: back in its own place, as the player left it.
+function Map:GoHome()
+	if held.away then comeHome() end
 end
 
 -- The minimap's size on screen, in pixels.
@@ -195,7 +244,7 @@ end
 -- Allows readings. The map stays in its place and goes away only for the frames a
 -- reading takes; its place is taken anew each time, so the player may move it between.
 function Map:Hold()
-	if not held then held = { mouse = {}, alpha = {}, away = false } end
+	if not held then held = { mouse = {}, alpha = {}, buttons = {}, away = false } end
 	return true
 end
 
@@ -220,10 +269,15 @@ end
 -- is on screen; the scanner lets that first frame under the cursor pass unread.
 function Map:Prepare(pixels)
 	if not held.away then goAway() end
-	local size = pixels / Minimap:GetEffectiveScale()
-	call("SetSize", size, size)
+	self:Resize(pixels)
 	call("ClearAllPoints")
 	call("SetPoint", "CENTER", UIParent, "BOTTOMLEFT", PARK, PARK)
+end
+
+-- `pixels` across; only while the map is away.
+function Map:Resize(pixels)
+	local size = pixels / Minimap:GetEffectiveScale()
+	call("SetSize", size, size)
 end
 
 -- Puts the prepared minimap so that the point (ox, oy) - in map units from its centre -

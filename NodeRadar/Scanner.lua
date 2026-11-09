@@ -17,11 +17,12 @@ local NODE_PX = 16
 -- Shrunk to this many pixels the whole map fits under one hit square, so one reading
 -- lists every node in reach, once per node. Measured: 20 px reads, 15 px reads nothing.
 local PRESENCE_PX = 21
--- size for reading a single spot: large enough that a hit square is a few yards wide
-local SPOT_PX = 128
--- A presence check takes the map from its place for two frames - the shrink needs a
--- frame to settle - so it runs rarely. Spawn points coming into reach are read the
--- moment they do, and a node the player gathers leaves the radar with the cast.
+-- size for reading a single spot: its hit square is about SAME_NODE yards each way at the
+-- widest zoom, so a node standing beside the spot does not read as the one looked for
+local SPOT_PX = 256
+-- A presence check takes the map from its place for a few frames, so it runs rarely.
+-- Spawn points coming into reach are read the moment they do, and a node the player
+-- gathers leaves the radar with the cast.
 local PRESENCE_INTERVAL = 20
 -- however much asks for readings, a new burst starts at most this often
 local BURST_GAP = 5
@@ -48,11 +49,14 @@ local SEARCHES_PER_CYCLE = 4
 -- a spawn point read empty while the presence check misses a node is passed over this
 -- long, so the search gets its turn
 local SPAWN_RETRY = 15
--- Spawn data from another world - GatherMate2_Data is mined on Retail - shows in the
--- nodes the search finds: this many of them, none near a spawn point, and no node ever
--- found at one, switch the spawn points off until the instance changes. Empty spawn
+-- Spawn data from another world - GatherMate2_Data is partly mined on Retail, where
+-- Cataclysm reshaped many zones - shows in the nodes the search finds: this many of
+-- them at different spots in one zone, none near a spawn point, and no node ever found
+-- at one, switch that zone's spawn points off until the instance changes. Empty spawn
 -- points prove nothing; there are far more of them than nodes standing at a time.
 local SPAWN_MISMATCHES = 3
+-- a searched node is judged against the zone of the nearest spawn point this close
+local ZONE_REACH = 200
 -- part of a presence square's half width at its edge that counts neither in nor out
 local EDGE_MARGIN = 0.1
 -- readings of one point that may fail before the routine is told it did
@@ -61,9 +65,9 @@ local TRIES = 3
 local world
 local routine
 local request
--- idle; prepared: resized off screen, goes under the cursor next frame; settle: under
--- the cursor for the frame the client needs to lay out the resized map; read: placed,
--- read next frame; gap: one frame for the world's own mouseover
+-- idle: the map is home; prepared: resized off screen, goes under the cursor next frame;
+-- settle: under the cursor for the frame the client needs to lay out the resized map;
+-- read: placed, read next frame
 local phase = "idle"
 local resumeAt = 0
 local searchFailedAt = {}
@@ -88,45 +92,74 @@ end
 local stats = { readings = 0, invalid = 0, presence = 0, spots = 0, searches = 0,
 	foundBySearch = 0, foundAtSpawn = 0, lost = 0, spawnReadings = 0, spawnHits = 0,
 	searchedNearSpawn = 0, searchedFarFromSpawn = 0, invalidWhy = {} }
-local spawnsDistrusted = false
+-- per zone: searched nodes near a spawn point, the spots of those far from one, and
+-- nodes found at a spawn point
+local trust = {}
+local distrustedNames = {}
 
 local function spawnsUsable()
-	return Candidates:Available() and not spawnsDistrusted
+	return Candidates:Available()
+end
+
+local function trustOf(zone)
+	local record = trust[zone]
+	if not record then
+		record = { near = 0, far = {}, hits = 0 }
+		trust[zone] = record
+	end
+	return record
 end
 
 -- counts one reading at a spawn point and how many nodes it found
-local function judgeSpawns(found)
+local function judgeSpawns(candidate, found)
 	stats.spawnReadings = stats.spawnReadings + 1
 	stats.spawnHits = stats.spawnHits + found
+	if candidate.zone then
+		local record = trustOf(candidate.zone)
+		record.hits = record.hits + found
+	end
 end
 
--- the distance from a searched node to the nearest spawn point of its kind, or nil
-local function spawnDistance(kind, east, north)
-	local best
-	Candidates:Near(east, north, SAME_NODE * 4, function(candidate, dx, dy)
-		local distance = math.sqrt(dx * dx + dy * dy)
-		if candidate.kind == kind and (not best or distance < best) then best = distance end
-	end)
-	return best
+local function zoneName(zone)
+	local info = C_Map.GetMapInfo(zone)
+	return info and type(info.name) == "string" and info.name or tostring(zone)
 end
 
 local function judgeSearched(kind, east, north)
-	if not Candidates:Available() or spawnsDistrusted then return end
-	local distance = spawnDistance(kind, east, north)
+	if not Candidates:Available() then return end
+	local zone, zoneDistance, distance
+	Candidates:Near(east, north, ZONE_REACH, function(candidate, dx, dy)
+		local away = math.sqrt(dx * dx + dy * dy)
+		if not zoneDistance or away < zoneDistance then zone, zoneDistance = candidate.zone, away end
+		if candidate.kind == kind and (not distance or away < distance) then distance = away end
+	end)
+	-- no data around: nothing to judge
+	if not zone then return end
+	local record = trustOf(zone)
 	if distance and distance <= SAME_NODE then
 		stats.searchedNearSpawn = stats.searchedNearSpawn + 1
-	else
-		stats.searchedFarFromSpawn = stats.searchedFarFromSpawn + 1
+		record.near = record.near + 1
+		return
 	end
-	if stats.searchedFarFromSpawn >= SPAWN_MISMATCHES and stats.searchedNearSpawn == 0
-		and stats.spawnHits == 0 then
-		spawnsDistrusted = true
-		log("spawn points switched off: %d nodes found by search, none near a spawn point - "
-			.. "the data does not match this world", stats.searchedFarFromSpawn)
+	-- a vein mined in several swings is found again at its spot
+	for _, spot in ipairs(record.far) do
+		if math.abs(spot[1] - east) <= SAME_NODE and math.abs(spot[2] - north) <= SAME_NODE then
+			return
+		end
+	end
+	stats.searchedFarFromSpawn = stats.searchedFarFromSpawn + 1
+	record.far[#record.far + 1] = { east, north }
+	if #record.far >= SPAWN_MISMATCHES and record.near == 0 and record.hits == 0 then
+		Candidates:Distrust(zone)
+		distrustedNames[#distrustedNames + 1] = zoneName(zone)
+		log("spawn points of %s switched off: %d nodes found by search, none near a spawn "
+			.. "point - the data does not match this zone", zoneName(zone), #record.far)
 	end
 end
 Scanner.stats = stats
 Scanner.lastPresence = {}
+-- when the last check that read every square began
+Scanner.wholeCheckAt = -math.huge
 
 -- yards per map unit, and the half width of a hit square in yards, on a map `pixels`
 -- across that shows `radius` yards each way
@@ -193,19 +226,19 @@ local function nearAnyHit(kind, east, north)
 end
 
 local function readSpot(east, north)
-	local names = sample(SPOT_PX, east, north)
+	local names, readEast, readNorth = sample(SPOT_PX, east, north)
 	if names then stats.spots = stats.spots + 1 end
-	return names
+	return names, readEast, readNorth
 end
 
 -- Confirms or adds every node a spot reading names. Returns how many were new.
-local function settleSpot(names, east, north, now, source)
+local function settleSpot(names, east, north, source)
 	local added = 0
 	for _, name in ipairs(names) do
 		if world.isNode(name) then
 			local key = nearestHit(name, east, north)
 			if key then
-				world.hits[key].seenAt = now
+				world.hits[key].seenAt = GetTime()
 			else
 				world.addHit(name, east, north, source)
 				added = added + 1
@@ -216,13 +249,13 @@ local function settleSpot(names, east, north, now, source)
 end
 
 -- Reads a shown node's spot: confirmed when its name is there, removed when it is not.
-local function recheck(key, now)
+local function recheck(key)
 	local hit = world.hits[key]
 	if not hit then return end
 	local names = readSpot(hit.east, hit.north)
 	if not names or not world.hits[key] then return end
 	if count(names, hit.name) > 0 then
-		hit.seenAt = now
+		hit.seenAt = GetTime()
 	else
 		log("gone: %s at %s - its spot reads [%s]", hit.name, where(hit.east, hit.north),
 			table.concat(names, ", "))
@@ -282,10 +315,24 @@ local function search(name, east, north, half)
 		east, north, half = chosenEast, chosenNorth, reach
 	end
 
-	local names = readSpot(east, north)
+	local names, spotEast, spotNorth = readSpot(east, north)
 	readings = readings + 1
 	if not names or count(names, name) == 0 then
 		return fail("the spot at " .. where(east, north) .. " does not read it")
+	end
+	-- a hit square may reach a little wider than reckoned, so a shown node near the spot
+	-- can lead the search to itself
+	local _, _, radius = world.position()
+	if not radius then return fail("no position") end
+	local _, spotHalf = geometry(SPOT_PX, radius)
+	local accounted = 0
+	for _, hit in pairs(world.hits) do
+		if hit.name == name and inSquare(hit, spotEast, spotNorth, spotHalf * (1 + EDGE_MARGIN)) then
+			accounted = accounted + 1
+		end
+	end
+	if count(names, name) <= accounted then
+		return fail("the spot at " .. where(east, north) .. " reads only nodes already shown")
 	end
 	log("search placed %s at %s in %d readings", name, where(east, north), readings)
 	return east, north
@@ -307,11 +354,12 @@ end
 
 -- A name the presence square counts more often than nodes are shown: its spawn points
 -- inside the square first, then a search.
-local function findMissing(name, number, squareEast, squareNorth, half, now)
+local function findMissing(name, number, squareEast, squareNorth, half)
 	-- the radar would not show it; finding where it stands costs readings for nothing
 	if not world.wanted(name) then return end
 	local kind = world.kindOf(name)
 	local spent = 0
+	local now = GetTime()
 	if spawnsUsable() then
 		local open = {}
 		Candidates:Near(squareEast, squareNorth, half * 1.5, function(candidate, dx, dy)
@@ -331,25 +379,25 @@ local function findMissing(name, number, squareEast, squareNorth, half, now)
 			local names = readSpot(candidate.east, candidate.north)
 			spent = spent + 1
 			if names then
-				candidate.probedAt = now
+				candidate.probedAt = GetTime()
 				local added = 0
 				if count(names, name) > 0 then
-					added = settleSpot(names, candidate.east, candidate.north, now, "spawn point")
+					added = settleSpot(names, candidate.east, candidate.north, "spawn point")
 					stats.foundAtSpawn = stats.foundAtSpawn + added
 					number = number - added
 				end
-				judgeSpawns(added)
+				judgeSpawns(candidate, added)
 			end
 		end
 	end
 
 	-- the spawn points are spent for now; each search finds one node they miss, and the
 	-- presence check comes round too rarely to leave the rest for later
-	if now - (searchFailedAt[name] or -math.huge) <= SEARCH_BACKOFF then return end
+	if GetTime() - (searchFailedAt[name] or -math.huge) <= SEARCH_BACKOFF then return end
 	for _ = 1, math.min(number, SEARCHES_PER_CYCLE) do
 		local east, north = search(name, squareEast, squareNorth, half)
 		if not east then
-			searchFailedAt[name] = now
+			searchFailedAt[name] = GetTime()
 			return
 		end
 		judgeSearched(kind, east, north)
@@ -363,11 +411,11 @@ end
 -- One presence reading of the square of half width `half` centred `dx`, `dy` yards from
 -- the player, set against the nodes shown inside it. `rechecked` collects the shown nodes
 -- already read again during this check, as the squares overlap.
-local function window(now, label, dx, dy, half, rechecked)
+local function window(label, dx, dy, half, rechecked)
 	local east, north = world.position()
-	if not east then return end
+	if not east then return false end
 	local names, readEast, readNorth = sample(PRESENCE_PX, east + dx, north + dy)
-	if not names then return end
+	if not names then return false end
 	stats.presence = stats.presence + 1
 	local inner, outer = half * (1 - EDGE_MARGIN), half * (1 + EDGE_MARGIN)
 
@@ -392,8 +440,10 @@ local function window(now, label, dx, dy, half, rechecked)
 		if (seen[name] or 0) < total then gone[name] = true end
 	end
 	for _, hit in pairs(world.hits) do
-		if not gone[hit.name] and inSquare(hit, readEast, readNorth, inner) then
-			hit.seenAt = now
+		-- a name read as often as it is shown confirms its nodes in the edge band too
+		local square = (seen[hit.name] or 0) >= (shownOuter[hit.name] or 0) and outer or inner
+		if not gone[hit.name] and inSquare(hit, readEast, readNorth, square) then
+			hit.seenAt = GetTime()
 		end
 	end
 
@@ -423,40 +473,58 @@ local function window(now, label, dx, dy, half, rechecked)
 		end)) do
 			if not rechecked[key] then
 				rechecked[key] = true
-				recheck(key, now)
+				recheck(key)
 			end
 		end
 	end
 	for name, total in pairs(seen) do
 		local missing = total - (shownOuter[name] or 0)
-		if missing > 0 then findMissing(name, missing, readEast, readNorth, half, now) end
+		if missing > 0 then findMissing(name, missing, readEast, readNorth, half) end
 	end
+	return true
 end
 
--- The presence check: one square on the player and one pushed to each side, as far as
--- the map reaches. Together they cover the whole reach - its corners lie beyond the
--- radius - while every reading stays on the map.
-local function presence(now)
-	local _, _, radius = world.position()
-	if not radius then return end
+local SQUARES = { { "centre", 0, 0 }, { "east", 1, 0 }, { "west", -1, 0 }, { "north", 0, 1 },
+	{ "south", 0, -1 } }
+
+-- The presence check: one square on the player and one pushed to each side until its
+-- inner part reaches the rim. Together they cover the whole reach while every reading
+-- stays on the map. Given world `points`, only the squares centred nearest to them are
+-- read. Returns whether every square read counted.
+local function presence(points)
+	local east, north, radius = world.position()
+	if not radius then return false end
 	local _, half = geometry(PRESENCE_PX, radius)
-	local side = radius - half
-	local rechecked = {}
-	window(now, "centre", 0, 0, half, rechecked)
-	window(now, "east", side, 0, half, rechecked)
-	window(now, "west", -side, 0, half, rechecked)
-	window(now, "north", 0, side, half, rechecked)
-	window(now, "south", 0, -side, half, rechecked)
+	local side = radius - half * (1 - EDGE_MARGIN)
+	local chosen = {}
+	for _, point in ipairs(points or {}) do
+		local best, bestDistance
+		for index, square in ipairs(SQUARES) do
+			local distance = math.max(math.abs(point.east - east - square[2] * side),
+				math.abs(point.north - north - square[3] * side))
+			if not bestDistance or distance < bestDistance then best, bestDistance = index, distance end
+		end
+		chosen[best] = true
+	end
+	local rechecked, complete = {}, true
+	for index, square in ipairs(SQUARES) do
+		if not points or chosen[index] then
+			complete = window(square[1], square[2] * side, square[3] * side, half, rechecked)
+				and complete
+		end
+	end
+	return complete
 end
 
--- Whether a spawn point came into reach, or was last checked long ago. The presence check
--- that follows covers the whole reach, so each is marked as looked at; a node it shows
--- that nobody knows of is looked for at its spawn points first.
+-- Whether a spawn point came into reach, or was last checked long ago, and those spawn
+-- points: the presence check that follows reads the squares holding them, so each is
+-- marked as looked at; a node it shows that nobody knows of is looked for at its spawn
+-- points first.
 -- Also returns why a node the radar would show could stand in reach, or nil.
 local function reach(now)
 	local east, north, radius = world.position()
 	if not east or not spawnsUsable() then return false, "any node may stand here without spawn data" end
-	local due, wanted = false, nil
+	local due, wanted, points = false, nil, {}
 	-- in reach now but not at the previous look, however long the routine waited between
 	reachLook = reachLook + 1
 	Candidates:Near(east, north, radius * 0.97, function(candidate)
@@ -470,8 +538,13 @@ local function reach(now)
 		-- checked by the presence check that follows, not read at its spot
 		candidate.checkedAt = now
 		due = due or candidate.name or "an unnamed spawn point"
+		points[#points + 1] = candidate
 	end)
-	return due, wanted
+	-- where the data proved wrong, any node may stand
+	if not wanted and Candidates:DistrustedNear(east, north, radius) then
+		wanted = "spawn data of this zone switched off"
+	end
+	return due, wanted, points
 end
 
 -- a node on the radar within reach, as reason for checks: it may have been gathered
@@ -492,18 +565,24 @@ local function track()
 		-- a burst ends when the routine waits; the next one keeps its distance
 		local rest = BURST_GAP - (GetTime() - lastReadingAt)
 		if rest > 0 then wait(rest) end
-		local due, wanted = reach(GetTime())
+		local due, wanted, points = reach(GetTime())
 		-- A check is worth its blink only where a node the radar would show can stand:
 		-- a spawn point of one in reach, or one already shown that may have gone.
 		local relevant = wanted or shownWantedInReach()
 		if not relevant then checkSoon = false end
-		if due or relevant and (checkSoon or GetTime() >= lastPresenceAt + PRESENCE_INTERVAL) then
-			log("check: %s", due and "spawn point of " .. due .. " came into reach"
-				or checkSoon and "the filters changed"
+		local whole = relevant and (checkSoon or GetTime() >= lastPresenceAt + PRESENCE_INTERVAL)
+		if whole then
+			log("check: %s", checkSoon and "the filters changed"
 				or string.format("every %d s, %s", PRESENCE_INTERVAL, relevant))
 			checkSoon = false
-			presence(GetTime())
+			-- readings wait for a free cursor; a node confirmed by them is seen after this
+			local started = GetTime()
+			if presence() then Scanner.wholeCheckAt = started end
 			lastPresenceAt = GetTime()
+			world.cycleDone()
+		elseif due then
+			log("check: spawn point of %s came into reach", due)
+			presence(points)
 			world.cycleDone()
 		end
 		wait(REACH_INTERVAL)
@@ -543,13 +622,15 @@ end
 
 -- spawn points get a fresh chance in another instance
 function Scanner:TrustSpawns()
-	spawnsDistrusted = false
+	wipe(trust)
+	wipe(distrustedNames)
 	stats.spawnReadings, stats.spawnHits = 0, 0
 	stats.searchedNearSpawn, stats.searchedFarFromSpawn = 0, 0
 end
 
+-- the zones whose spawn points are switched off, for the snapshot
 function Scanner:SpawnsDistrusted()
-	return spawnsDistrusted
+	return #distrustedNames > 0 and table.concat(distrustedNames, ", ") or "none"
 end
 
 function Scanner:Stop()
@@ -585,23 +666,35 @@ local function place()
 	return true
 end
 
--- Between two readings of a burst the map stays away, parked off the cursor: one short
--- absence from its place instead of a flicker, and no resize to settle again. After the
--- last reading it goes home.
-local function collect()
+-- A reading's frame places the next one: the client resolves the mouseover for where
+-- the map was drawn, so a burst takes one frame per reading, plus one to settle each new
+-- size, and the map is away from its place only that long. It goes home once the routine
+-- waits or the cursor is wanted.
+local function proceed(free)
+	if request and free then
+		local ready = Map:Ready(request.pixels)
+		-- the icons are shrunk already, so a new size needs no frame off screen
+		if not ready then Map:Resize(request.pixels) end
+		if place() then
+			phase = ready and "read" or "settle"
+			return
+		end
+	end
+	Map:GoHome()
+	phase = "idle"
+end
+
+local function collect(free)
 	local names, why = Map:Read()
 	local east, north, radius = world.position()
 	local ox, oy = Map:CursorOffset()
-	phase = "gap"
 	stats.readings = stats.readings + 1
 	lastReadingAt = GetTime()
 	if names and east then
 		local yardsPerUnit = geometry(request.pixels, radius)
 		resume(names, east + ox * yardsPerUnit, north + oy * yardsPerUnit)
-		Map:Park(request ~= nil)
-		return
+		return proceed(free)
 	end
-	Map:Park(true)
 	why = why or "no position"
 	stats.invalid = stats.invalid + 1
 	stats.invalidWhy[why] = (stats.invalidWhy[why] or 0) + 1
@@ -612,26 +705,20 @@ local function collect()
 		invalidPending[why], invalidLoggedAt[why] = 0, now
 	end
 	request.tries = request.tries + 1
-	if request.tries >= TRIES then
-		resume(nil)
-		Map:Park(request ~= nil)
-	end
+	if request.tries >= TRIES then resume(nil) end
+	proceed(free)
 end
 
 -- Called every frame while the map is held. `free` says whether the cursor may take the
 -- map now; a reading already placed is collected either way.
 function Scanner:Step(free)
 	if not routine then return end
-	if phase == "read" then return collect() end
-	if phase == "gap" then
-		phase = "idle"
-		return
-	end
+	if phase == "read" then return collect(free) end
 	if phase == "prepared" then
 		if free and place() then
 			phase = "settle"
 		else
-			Map:Park(false)
+			Map:GoHome()
 			phase = "idle"
 		end
 		return
@@ -643,8 +730,6 @@ function Scanner:Step(free)
 		phase = "read"
 		return
 	end
-	-- a burst the cursor interrupts must not keep the map from its place
-	if not free and Map:IsAway() then Map:Park(false) end
 
 	if not request then
 		if GetTime() < resumeAt then return end
@@ -652,10 +737,6 @@ function Scanner:Step(free)
 		if not request then return end
 	end
 	if not free then return end
-	if Map:Ready(request.pixels) then
-		if place() then phase = "read" end
-	else
-		Map:Prepare(request.pixels)
-		phase = "prepared"
-	end
+	Map:Prepare(request.pixels)
+	phase = "prepared"
 end

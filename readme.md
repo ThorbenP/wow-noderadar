@@ -26,7 +26,8 @@ and puts it straight back. That is the short blink you see where your minimap si
   than once every five seconds.
 - With GatherMate2, NodeRadar only looks where a node you want can spawn: no spawn
   point of one in range and none on the radar, no blink at all. Nodes your filters
-  hide cost nothing.
+  hide cost nothing. Where GatherMate2's spawn points turn out not to match a zone,
+  NodeRadar ignores them there and checks every twenty seconds.
 - While it is away the minimap is invisible, so nothing shows at your cursor.
 - NodeRadar only does it while your mouse rests on open world. It never gets in the
   way when you point at a monster, an NPC or a node, use a window or a bar, turn the
@@ -145,20 +146,29 @@ NodeRadar is free and stays free. If it saves you time and you'd like to say tha
     side - together the whole reach - and compares the counts with what the radar
     shows: every twenty seconds while a GatherMate2 spawn point of a node the
     filters let through is in reach or such a node is on the radar - always, without
-    spawn data - and when such a spawn point comes into reach or a filter changes.
-    Nodes the filters hide are never looked for.
+    spawn data - and when a filter changes what it lets through. A spawn point
+    coming into reach reads only the square centred nearest to it. Nodes the filters
+    hide are never looked for.
   - A burst of readings starts at most every five seconds. The map is resized off
     screen a frame before it goes under the cursor and stays away until the burst
-    ends. Alpha does not reach the icons the client draws itself - nodes, town and
-    quest markers, the player arrow - so `SetIconScale` shrinks them out of sight
-    while the map is away.
+    ends; each reading's frame places the next one, so a burst takes a frame per
+    reading plus one to settle each new size. Alpha does not reach the icons the
+    client draws itself - nodes, town and quest markers, the player arrow - so
+    `SetIconScale` shrinks them out of sight while the map is away.
+  - Minimap buttons and map pins are placed by their addons from the map's width at
+    that moment, so any that moved while the map was away get their anchor back, and
+    the map stays in place for five seconds after a loading screen.
   - Only a difference costs more readings: known spawn points from GatherMate2 first,
     otherwise a quadtree search whose quadrants are each read with a hit square a
     quarter wider than they are, on a map that grows to 1400 pixels for the last
-    steps.
+    steps. Three searched nodes at different spots of one zone, none near a spawn
+    point there and none found at one, switch that zone's spawn points off: the
+    GatherMate2 data does not match it.
   - A successful gathering cast removes its node at once. A node found again where
     one was taken off the radar within two minutes is the same node, without sound
-    or highlight. Nodes are kept in world coordinates.
+    or highlight. Nodes are kept in world coordinates. A node in reach leaves only
+    when the checks of a minute no longer confirm it; one out of reach or hidden by
+    the filters after a minute.
 
 ## Credits and licence
 

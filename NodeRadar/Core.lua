@@ -13,8 +13,9 @@ NR.version = C_AddOns.GetAddOnMetadata(ADDON, "Version") or "?"
 
 -- the slow tick: tracking, skill and the hold reason change far slower than a frame
 local TICK = 0.25
--- A node nothing has confirmed for this long is gone, whether or not anyone could look.
--- Well above the scanner's presence interval, which a busy cursor can stretch.
+-- A node no check confirmed for this long is gone. Nodes the checks cover count the time
+-- from their last whole check, so combat or a busy cursor does not take them off the
+-- radar; nodes out of reach or hidden by the filters count it from now.
 local STALE_SECONDS = 60
 -- standing on a node puts its icon under the player marker, where it says nothing
 local MIN_DISTANCE = 5
@@ -161,12 +162,16 @@ local function skillTooLow(kind, required)
 end
 
 -- what the filters let onto the radar and into the alert
-local function wanted(hit)
-	if hit.item and db.hiddenItems[hit.item] then return false end
-	local level = difficulty(hit.kind, hit.skill)
+local function wantedNode(kind, skill, item)
+	if item and db.hiddenItems[item] then return false end
+	local level = difficulty(kind, skill)
 	if db.hideTooLow and level == "impossible" then return false end
 	if db.hideTrivial and level == "trivial" then return false end
 	return true
+end
+
+local function wanted(hit)
+	return wantedNode(hit.kind, hit.skill, hit.item)
 end
 
 -- the client draws no blips for a gathering type it is not tracking
@@ -282,9 +287,14 @@ local context = {
 	-- whether the filters let a node of this name onto the radar; unknown names may
 	wanted = function(name)
 		local info = nodeInfo(name)
-		return not info or wanted({ item = info[3], kind = info[1], skill = info[2] })
+		return not info or wantedNode(info[1], info[2], info[3])
 	end,
 }
+
+-- Addons create and place their minimap buttons right after a loading screen, from the
+-- map's size at that moment; the map stays in its place meanwhile.
+local SETTLE_AFTER_LOADING = 5
+local settledAt = 0
 
 -- One source for why the minimap cannot be read, in the order that matters to the player.
 local function holdReason()
@@ -295,6 +305,7 @@ local function holdReason()
 	-- readings are taken as offsets on a north-up map
 	if C_CVar.GetCVar("rotateMinimap") == "1" then return "the minimap rotates" end
 	if EditModeManagerFrame and EditModeManagerFrame:IsShown() then return "Edit Mode is open" end
+	if GetTime() < settledAt then return "the interface is still loading" end
 	if not playerEast then return "no position available here" end
 	if not viewRadius then return "the minimap's range is unreadable" end
 end
@@ -401,13 +412,14 @@ local function render(now)
 	local range = viewRadius or 0
 	local count = 0
 	for key, hit in pairs(hits) do
-		if now - hit.seenAt > STALE_SECONDS then
+		local east, north = hit.east - playerEast, hit.north - playerNorth
+		local distance = math.sqrt(east * east + north * north)
+		local covered = distance <= range and wanted(hit)
+		if (covered and Scanner.wholeCheckAt or now) - hit.seenAt > STALE_SECONDS then
 			log("expired: %s, unconfirmed for %d s", hit.name, STALE_SECONDS)
 			removeHit(key, "expired")
 		else
-			local east, north = hit.east - playerEast, hit.north - playerNorth
-			local distance = math.sqrt(east * east + north * north)
-			if distance <= range and distance >= MIN_DISTANCE and wanted(hit) then
+			if covered and distance >= MIN_DISTANCE then
 				local right, forward = toFacing(east, north, facing)
 				count = count + 1
 				local entry = entries[count]
@@ -429,11 +441,20 @@ end
 
 local preparedInstance
 local lastFilters
+local filterFlags = {}
 
-local function hiddenCount()
-	local total = 0
-	for _ in pairs(db.hiddenItems) do total = total + 1 end
-	return total
+-- Which known nodes the filters let through; a skill-up that changes none of them is no
+-- reason for a check.
+local function filterSignature()
+	local count = 0
+	for _, source in ipairs({ shipped, learned }) do
+		for name in pairs(source) do
+			count = count + 1
+			filterFlags[count] = context.wanted(name) and "1" or "0"
+		end
+	end
+	for index = #filterFlags, count + 1, -1 do filterFlags[index] = nil end
+	return table.concat(filterFlags)
 end
 
 local function tick()
@@ -465,10 +486,7 @@ local function tick()
 		end
 	end
 	pauseReason = reason
-	-- what the filters let through changes with the settings and with every skill-up
-	local filters = string.format("%s %s %s %s %d", tostring(db.hideTrivial),
-		tostring(db.hideTooLow), tostring(skillRank.herb), tostring(skillRank.ore),
-		hiddenCount())
+	local filters = filterSignature()
 	if filters ~= lastFilters then
 		if lastFilters then Scanner:CheckSoon() end
 		lastFilters = filters
@@ -695,6 +713,8 @@ local gatherTarget
 local loader = CreateFrame("Frame")
 loader:RegisterEvent("PLAYER_LOGIN")
 loader:RegisterEvent("PLAYER_LOGOUT")
+loader:RegisterEvent("PLAYER_ENTERING_WORLD")
+loader:RegisterEvent("LOADING_SCREEN_DISABLED")
 loader:RegisterEvent("PLAYER_REGEN_DISABLED")
 loader:RegisterEvent("PLAYER_REGEN_ENABLED")
 loader:RegisterUnitEvent("UNIT_SPELLCAST_SENT", "player")
@@ -717,6 +737,8 @@ loader:SetScript("OnEvent", function(_, event, ...)
 		end
 	elseif event == "PLAYER_LOGOUT" then
 		Map:Release()
+	elseif event == "PLAYER_ENTERING_WORLD" or event == "LOADING_SCREEN_DISABLED" then
+		settledAt = GetTime() + SETTLE_AFTER_LOADING
 	elseif event == "PLAYER_REGEN_DISABLED" or event == "PLAYER_REGEN_ENABLED" then
 		-- the minimap comes back the moment combat hides the radar, not a tick later
 		if initialized then

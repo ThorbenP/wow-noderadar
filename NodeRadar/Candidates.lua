@@ -19,6 +19,8 @@ local SAME_SPOT = 3
 local GatherMate
 local builtFor
 local buckets = {}
+-- zones whose spawn points proved not to match this world
+local distrusted = {}
 Candidates.count = 0
 Candidates.zones = 0
 
@@ -59,7 +61,7 @@ function Candidates:Available()
 	return GatherMate ~= nil
 end
 
-local function add(east, north, kind, name)
+local function add(east, north, kind, name, zone)
 	local key = bucketKey(east, north)
 	local bucket = buckets[key]
 	if not bucket then
@@ -72,7 +74,7 @@ local function add(east, north, kind, name)
 			return
 		end
 	end
-	bucket[#bucket + 1] = { east = east, north = north, kind = kind, name = name,
+	bucket[#bucket + 1] = { east = east, north = north, kind = kind, name = name, zone = zone,
 		probedAt = -math.huge }
 	Candidates.count = Candidates.count + 1
 end
@@ -116,7 +118,7 @@ local function addZones(source, dbType, kind, instanceID, frames)
 						local x, y = decode(coord)
 						local north = frame[1] + (frame[3] - frame[1]) * y
 						local west = frame[2] + (frame[4] - frame[2]) * x
-						add(-west, north, kind, nameOf(dbType, nodeID))
+						add(-west, north, kind, nameOf(dbType, nodeID), zone)
 					end
 				end
 			end
@@ -130,6 +132,7 @@ function Candidates:Prepare(instanceID)
 	if not GatherMate or instanceID == builtFor then return end
 	builtFor = instanceID
 	wipe(buckets)
+	wipe(distrusted)
 	self.count = 0
 	local frames = {}
 	for dbType, kind in pairs(KINDS) do
@@ -167,8 +170,11 @@ function Candidates:Prepare(instanceID)
 		or "none")
 end
 
--- Calls visit(candidate) for every candidate within `radius` yards of (east, north).
-function Candidates:Near(east, north, radius, visit)
+function Candidates:Distrust(zone)
+	distrusted[zone] = true
+end
+
+local function visitNear(east, north, radius, visit)
 	local low, high = math.floor((east - radius) / BUCKET), math.floor((east + radius) / BUCKET)
 	local bottom, top = math.floor((north - radius) / BUCKET), math.floor((north + radius) / BUCKET)
 	local limit = radius * radius
@@ -183,4 +189,22 @@ function Candidates:Near(east, north, radius, visit)
 			end
 		end
 	end
+end
+
+-- Calls visit(candidate, dx, dy) for every trusted candidate within `radius` yards of
+-- (east, north).
+function Candidates:Near(east, north, radius, visit)
+	visitNear(east, north, radius, function(candidate, dx, dy)
+		if not distrusted[candidate.zone] then visit(candidate, dx, dy) end
+	end)
+end
+
+-- whether a spawn point of a switched-off zone lies within `radius` yards
+function Candidates:DistrustedNear(east, north, radius)
+	if not next(distrusted) then return false end
+	local found = false
+	visitNear(east, north, radius, function(candidate)
+		found = found or distrusted[candidate.zone] == true
+	end)
+	return found
 end
