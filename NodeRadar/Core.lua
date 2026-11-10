@@ -1,7 +1,7 @@
 local ADDON, NR = ...
 
 if not NR.Map or not NR.Candidates or not NR.Scanner or not NR.Radar or not NR.Options
-	or not NR.Dump or not NR.NODES or not NR.Filter then
+	or not NR.Dump or not NR.NODES or not NR.Filter or not NR.WhatsNew then
 	print("|cff33ff99NodeRadar|r |cffff4444a file did not load - check BugSack|r")
 	return
 end
@@ -38,9 +38,9 @@ local SKILL_LINES = { herb = 182, ore = 186 }
 local QUESTION_MARK = "Interface\\Icons\\INV_Misc_QuestionMark"
 
 local defaults = {
-	radius = 120,
+	radius = 170,
 	iconSize = 20,
-	nodeAlpha = 1,
+	nodeAlpha = 0.6,
 	gridAlpha = 0.25,
 	colorBySkill = true,
 	showSparkle = true,
@@ -68,6 +68,7 @@ local learned
 local icons = {}
 
 local hits, entries = {}, {}
+NR.hits = hits
 local nextHitID = 0
 local playerEast, playerNorth, playerInstance
 local viewRadius
@@ -350,21 +351,19 @@ end
 
 -- a pause of the readings is logged when it ends, if it lasted long enough to matter
 local PAUSE_LOG_SECONDS = 2
--- A player steering with a mouse button lets go for a moment between two presses; a
--- burst starting in that moment blinks right after the press. Readings resume only once
--- the cursor has stayed free this long.
-local RESUME_GRACE = 2
 local busySince, busyWhy
 
 local function cursorFree(now)
 	local why = cursorBusy()
+	-- a name the client hands out secret despite frameName's checks must not be compared
+	if isSecret(why) then why = "the cursor is on a protected frame" end
 	if why ~= busyWhy then
 		if busyWhy and now - busySince >= PAUSE_LOG_SECONDS then
 			log("readings paused %.1f s: %s", now - busySince, busyWhy)
 		end
 		busySince, busyWhy = now, why
 	end
-	return why == nil and now - busySince >= RESUME_GRACE
+	return why == nil
 end
 
 local function readViewRadius()
@@ -410,13 +409,14 @@ local function render(now)
 	if not facing or not playerEast then return end
 
 	local range = viewRadius or 0
+	local reach = math.min(range, Scanner.NODE_RANGE)
 	local count = 0
 	for key, hit in pairs(hits) do
 		local east, north = hit.east - playerEast, hit.north - playerNorth
 		local distance = math.sqrt(east * east + north * north)
-		local covered = distance <= range and wanted(hit)
+		local covered = distance <= reach and wanted(hit)
 		if (covered and Scanner.wholeCheckAt or now) - hit.seenAt > STALE_SECONDS then
-			log("expired: %s, unconfirmed for %d s", hit.name, STALE_SECONDS)
+			log("expired: %s %.0f yd away, unconfirmed for %d s", hit.name, distance, STALE_SECONDS)
 			removeHit(key, "expired")
 		else
 			if covered and distance >= MIN_DISTANCE then
@@ -632,6 +632,7 @@ end
 local function initialize()
 	if initialized then return true end
 
+	local freshInstall = NodeRadarDB == nil
 	NodeRadarDB = NodeRadarDB or {}
 	-- Snapshots from an older format read as the current one but mean different
 	-- things, so they are dropped rather than mixed into a fresh set of readings.
@@ -642,6 +643,7 @@ local function initialize()
 	end
 	applyDefaults(NodeRadarDB, defaults)
 	db = NodeRadarDB
+	NR.WhatsNew:Offer(db, freshInstall)
 	db.learned = db.learned or {}
 	db.learned[locale] = db.learned[locale] or {}
 	learned = db.learned[locale]
@@ -786,6 +788,7 @@ local function snapshotLines()
 		.. "from a spawn point=%d/%d switched off=%s", stats.spawnReadings, stats.spawnHits,
 		stats.searchedNearSpawn, stats.searchedFarFromSpawn, tostring(Scanner:SpawnsDistrusted()))
 	append(lines, "invalid readings: %s", tally(stats.invalidWhy))
+	append(lines, "farthest node read this session: %.0f yd", stats.farthestRead)
 	append(lines, "readings now: %s", busyWhy and string.format("paused %.1f s, %s",
 		GetTime() - busySince, busyWhy) or "allowed")
 	append(lines, "last presence: %s", tally(Scanner.lastPresence))

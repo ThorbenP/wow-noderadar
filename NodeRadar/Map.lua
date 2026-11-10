@@ -164,6 +164,127 @@ local function restoreButtons()
 	end
 end
 
+-- Frames outside the minimap's tree but anchored into it - Blizzard's coordinates and LFG
+-- eye, a skin's border - travel with it to the cursor without taking its alpha. They are
+-- looked for among UIParent's children and in the minimap's cluster; deeper in UIParent
+-- would cost a walk of every addon's frames per burst.
+local CLUSTER_DEPTH = 3
+-- generations between a region and the minimap that still count as inside it
+local INSIDE_DEPTH = 10
+
+local function usable(object)
+	return object ~= nil and not isSecret(object) and type(object) == "table"
+		and not (object.IsForbidden and object:IsForbidden())
+end
+
+local function insideMinimap(object)
+	for _ = 1, INSIDE_DEPTH do
+		if object == Minimap then return true end
+		object = object:GetParent()
+		if not usable(object) then return false end
+	end
+	return false
+end
+
+local function anchoredToMinimap(frame, answered)
+	if answered[frame] ~= nil then return answered[frame] end
+	answered[frame] = false
+	-- anchors may be any region; a Line refuses the point getters
+	local ok, points = pcall(frame.GetNumPoints, frame)
+	if not ok or isSecret(points) or type(points) ~= "number" then return false end
+	for index = 1, points do
+		local got, _, relative = pcall(frame.GetPoint, frame, index)
+		if got and usable(relative) and (insideMinimap(relative) or relative.GetNumPoints
+			and anchoredToMinimap(relative, answered)) then
+			answered[frame] = true
+			return true
+		end
+	end
+	return false
+end
+
+local function findFollowers(parent, depth, answered, found)
+	for _, frame in ipairs({ parent:GetChildren() }) do
+		if frame ~= Minimap and usable(frame) then
+			if anchoredToMinimap(frame, answered) then
+				if not insideMinimap(frame) then found[#found + 1] = frame end
+			elseif parent ~= UIParent and depth < CLUSTER_DEPTH then
+				findFollowers(frame, depth + 1, answered, found)
+			end
+		end
+	end
+end
+
+local lastFollowers
+
+local function followers()
+	local found, answered = {}, {}
+	findFollowers(UIParent, 1, answered, found)
+	if MinimapCluster then findFollowers(MinimapCluster, 1, answered, found) end
+	return found
+end
+
+local function hideFollowers(found)
+	local hidden = {}
+	for _, frame in ipairs(found) do
+		local alpha = frame:GetAlpha()
+		if not held.followers[frame] and not isSecret(alpha)
+			and not (InCombatLockdown() and frame:IsProtected()) then
+			hidden[#hidden + 1] = frame
+			held.followers[frame] = alpha
+			frame:SetAlpha(0)
+			if frame:IsMouseEnabled() then
+				held.mouse[frame] = true
+				frame:EnableMouse(false)
+			end
+			mute(frame, 1)
+		end
+	end
+	local logged = summary(hidden)
+	if NR.Log and logged ~= lastFollowers then
+		NR.Log("frames anchored to the minimap, hidden while it is away: %s", logged)
+	end
+	lastFollowers = logged
+end
+
+-- The minimap draws quest areas whatever its alpha, so a reading on a large map flashes
+-- them across the screen; their tracking is off while the map is away. The client keeps
+-- it on otherwise, so off at login is a session that ended mid-reading.
+local function questAreasIndex()
+	local filter = Enum.MinimapTrackingFilter and Enum.MinimapTrackingFilter.QuestPOIs
+	if not filter or not C_Minimap.GetTrackingFilter then return nil end
+	for index = 1, C_Minimap.GetNumTrackingTypes() do
+		local info = C_Minimap.GetTrackingFilter(index)
+		if type(info) == "table" and not isSecret(info) and info.filterID == filter then
+			return index
+		end
+	end
+end
+
+local function hideQuestAreas()
+	local index = questAreasIndex()
+	local info = index and C_Minimap.GetTrackingInfo(index)
+	if type(info) ~= "table" or isSecret(info) or info.active ~= true then return end
+	NodeRadarDB.questAreasOff = true
+	C_Minimap.SetTracking(index, false)
+	held.questAreas = true
+end
+
+local function showQuestAreas()
+	local index = questAreasIndex()
+	if not index then return end
+	C_Minimap.SetTracking(index, true)
+	NodeRadarDB.questAreasOff = nil
+end
+
+local questAreasRestorer = CreateFrame("Frame")
+questAreasRestorer:RegisterEvent("PLAYER_ENTERING_WORLD")
+questAreasRestorer:SetScript("OnEvent", function()
+	if NodeRadarDB and NodeRadarDB.questAreasOff and not (held and held.away) then
+		showQuestAreas()
+	end
+end)
+
 local function applyIconScale(shrunk)
 	if type(Minimap.SetIconScale) ~= "function" or shrunk == iconHidden then return end
 	if shrunk then
@@ -179,6 +300,8 @@ end
 -- it can sit anywhere, deaf to clicks and the wheel - which would ping or zoom - but not
 -- to hover, which is what produces the mouseover.
 local function goAway()
+	local found = followers()
+	NR.StandIn:Begin(iconScale, found)
 	held.points = anchorsOf(Minimap)
 	for _, child in ipairs({ Minimap:GetChildren() }) do held.buttons[child] = anchorsOf(child) end
 	held.width, held.height = Minimap:GetSize()
@@ -196,6 +319,8 @@ local function goAway()
 	Minimap:SetMouseMotionEnabled(true)
 	applyIconScale(true)
 	mute(Minimap, 1)
+	hideFollowers(found)
+	hideQuestAreas()
 	held.away = true
 end
 
@@ -215,11 +340,18 @@ local function comeHome()
 	Minimap:SetMouseClickEnabled(held.clicks)
 	Minimap:EnableMouseWheel(held.wheel)
 	applyIconScale(false)
+	for frame, alpha in pairs(held.followers) do frame:SetAlpha(alpha) end
 	for frame in pairs(held.mouse) do frame:EnableMouse(true) end
 	for region in pairs(held.alpha) do region:SetIgnoreParentAlpha(true) end
+	wipe(held.followers)
 	wipe(held.mouse)
 	wipe(held.alpha)
+	if held.questAreas then
+		showQuestAreas()
+		held.questAreas = nil
+	end
 	restoreButtons()
+	NR.StandIn:End()
 	held.away = false
 	held.homeAt = GetTime()
 	-- The client applies the home size a frame late, and a refresh now alone left the
@@ -244,7 +376,7 @@ end
 -- Allows readings. The map stays in its place and goes away only for the frames a
 -- reading takes; its place is taken anew each time, so the player may move it between.
 function Map:Hold()
-	if not held then held = { mouse = {}, alpha = {}, buttons = {}, away = false } end
+	if not held then held = { mouse = {}, alpha = {}, buttons = {}, followers = {}, away = false } end
 	return true
 end
 
@@ -306,6 +438,8 @@ end
 -- moves under a resting cursor. What counts is that the cursor stayed put and lies on
 -- the map.
 function Map:Read()
+	-- a press since the map was placed: while the camera turns most frames resolve nothing
+	if IsMouselooking() or IsMouseButtonDown() then return nil, "a mouse button went down" end
 	local cursorX, cursorY = GetCursorPosition()
 	if math.abs(cursorX - held.cursorX) > CURSOR_DRIFT_PX
 		or math.abs(cursorY - held.cursorY) > CURSOR_DRIFT_PX then

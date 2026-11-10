@@ -6,9 +6,9 @@ your view, with the distance in yards next to every icon.
 
 Made for **World of Warcraft: Forever**.
 
-**Important since the November 2026 WoW Forever update:** your minimap blinks briefly
-now and then while NodeRadar reads it, and GatherMate2 is recommended. Read why
-below.
+**Important since the November 2026 WoW Forever update:** NodeRadar has to borrow your
+minimap for a split second now and then to read it — since 3.1.0 a stand-in hides that
+almost completely. GatherMate2 is recommended. Read why below.
 
 ## Why the minimap blinks
 
@@ -19,15 +19,20 @@ so after that update its radar stayed empty.
 NodeRadar 3.0 still reads your minimap, but now it has to borrow it for a moment: it
 moves the minimap under your mouse cursor for a split second, reads what is there,
 and puts it straight back. That is the short blink you see where your minimap sits.
+Meanwhile a stand-in covers its place: the minimap's own terrain around you, with its
+frame, the buttons and pins of your addons, your arrow and dots for the nodes on the
+radar and your group. It fades back into
+the real minimap a moment later.
 
-- It happens every twenty seconds, when a known spawn point comes into range (with
-  GatherMate2), and for a little longer when a new node turns up — but never more
-  than once every five seconds.
+- It happens every twenty seconds, the moment a known spawn point comes into range
+  (with GatherMate2), and for a little longer when a new node turns up.
 - With GatherMate2, NodeRadar only looks where a node you want can spawn: no spawn
   point of one in range and none on the radar, no blink at all. Nodes your filters
   hide cost nothing. Where GatherMate2's spawn points turn out not to match a zone,
   NodeRadar ignores them there and checks every twenty seconds.
-- While it is away the minimap is invisible, so nothing shows at your cursor.
+- While it is away the minimap is invisible, so nothing shows at your cursor. Quest
+  areas, the group finder's eye and frames other addons attach to the minimap hide
+  with it.
 - NodeRadar only does it while your mouse rests on open world. It never gets in the
   way when you point at a monster, an NPC or a node, use a window or a bar, turn the
   camera or aim a spell — it simply waits, and the radar updates a moment later.

@@ -7,9 +7,9 @@ your view, with the distance in yards next to every icon.
 Made for **World of Warcraft: Forever**. Classic Era and TBC Anniversary are covered
 by version 1.2.1.
 
-**Important since the November 2026 WoW Forever update:** your minimap blinks briefly
-now and then while NodeRadar reads it, and GatherMate2 is recommended. Read why
-below.
+**Important since the November 2026 WoW Forever update:** NodeRadar has to borrow your
+minimap for a split second now and then to read it — since 3.1.0 a stand-in hides that
+almost completely. GatherMate2 is recommended. Read why below.
 
 ## Why the minimap blinks
 
@@ -20,15 +20,20 @@ so after that update its radar stayed empty.
 NodeRadar 3.0 still reads your minimap, but now it has to borrow it for a moment: it
 moves the minimap under your mouse cursor for a split second, reads what is there,
 and puts it straight back. That is the short blink you see where your minimap sits.
+Meanwhile a stand-in covers its place: the minimap's own terrain around you, with its
+frame, the buttons and pins of your addons, your arrow and dots for the nodes on the
+radar and your group. It fades back into
+the real minimap a moment later.
 
-- It happens every twenty seconds, when a known spawn point comes into range (with
-  GatherMate2), and for a little longer when a new node turns up — but never more
-  than once every five seconds.
+- It happens every twenty seconds, the moment a known spawn point comes into range
+  (with GatherMate2), and for a little longer when a new node turns up.
 - With GatherMate2, NodeRadar only looks where a node you want can spawn: no spawn
   point of one in range and none on the radar, no blink at all. Nodes your filters
   hide cost nothing. Where GatherMate2's spawn points turn out not to match a zone,
   NodeRadar ignores them there and checks every twenty seconds.
-- While it is away the minimap is invisible, so nothing shows at your cursor.
+- While it is away the minimap is invisible, so nothing shows at your cursor. Quest
+  areas, the group finder's eye and frames other addons attach to the minimap hide
+  with it.
 - NodeRadar only does it while your mouse rests on open world. It never gets in the
   way when you point at a monster, an NPC or a node, use a window or a bar, turn the
   camera or aim a spell — it simply waits, and the radar updates a moment later.
@@ -146,18 +151,33 @@ NodeRadar is free and stays free. If it saves you time and you'd like to say tha
     side - together the whole reach - and compares the counts with what the radar
     shows: every twenty seconds while a GatherMate2 spawn point of a node the
     filters let through is in reach or such a node is on the radar - always, without
-    spawn data - and when a filter changes what it lets through. A spawn point
-    coming into reach reads only the square centred nearest to it. Nodes the filters
-    hide are never looked for.
-  - A burst of readings starts at most every five seconds. The map is resized off
-    screen a frame before it goes under the cursor and stays away until the burst
-    ends; each reading's frame places the next one, so a burst takes a frame per
-    reading plus one to settle each new size. Alpha does not reach the icons the
-    client draws itself - nodes, town and quest markers, the player arrow - so
-    `SetIconScale` shrinks them out of sight while the map is away.
+    spawn data - and when a filter changes what it lets through. The client shows a
+    node only within about 185 yards of the player, so a spawn point is read once it
+    comes within 175 yards, through the square centred nearest to it alone. Nodes the
+    filters hide are never looked for.
+  - A burst ends when the routine waits for its next look at the spawn points, a
+    quarter second later. The map is resized off screen a frame before it goes under
+    the cursor and stays away until the burst ends; each reading's frame places the
+    next one, so a burst takes a frame per reading plus one to settle each new size.
+    Alpha does not reach the icons the client draws itself - nodes, town and quest
+    markers, the player arrow - so `SetIconScale` shrinks them out of sight while the
+    map is away.
   - Minimap buttons and map pins are placed by their addons from the map's width at
     that moment, so any that moved while the map was away get their anchor back, and
     the map stays in place for five seconds after a loading screen.
+  - While the map is away, `StandIn.lua` draws over its place: the minimap's terrain
+    tiles centred on the player at its view radius, masked to the map's shape, dots for
+    the radar's nodes and the group, the player arrow, and a picture of every visible
+    texture and text in the map's tree and its followers, taken as the map leaves and
+    stacked at the originals' strata and levels; texts keep updating. The client
+    loads the tiles only by file id; `NodeRadar/MinimapTiles.lua` maps them for both
+    continents and is generated by `tools/gen_minimap_tiles.py` from the wowdev
+    community listfile. Indoors and elsewhere the zone's world map art stands in. It fades out
+    0.2 s after the map is back. Frames outside the minimap's tree but anchored into
+    it (Blizzard's coordinates, the LFG eye, a skin's border) get alpha 0 and no
+    mouse, and the `QuestPOIs` tracking is off, since quest areas ignore the map's
+    alpha; `NodeRadarDB.questAreasOff` puts it back at the next login if a session
+    ends mid-reading.
   - Only a difference costs more readings: known spawn points from GatherMate2 first,
     otherwise a quadtree search whose quadrants are each read with a hit square a
     quarter wider than they are, on a map that grows to 1400 pixels for the last

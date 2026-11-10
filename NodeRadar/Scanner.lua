@@ -24,11 +24,16 @@ local SPOT_PX = 256
 -- Spawn points coming into reach are read the moment they do, and a node the player
 -- gathers leaves the radar with the cast.
 local PRESENCE_INTERVAL = 20
--- however much asks for readings, a new burst starts at most this often
-local BURST_GAP = 5
--- how often the routine looks for spawn points that came into reach; costs no reading
+-- how often the routine looks for spawn points that came into sight; costs no reading
 -- unless one did
 local REACH_INTERVAL = 0.25
+-- The client puts a node on the minimap only once the player is within about 185 yards
+-- of it - on 70862 no node was ever first found farther away, though the widest zoom
+-- shows 233 - so a spawn point is read when it comes this close, not at the map's edge.
+local SIGHT = 175
+-- Beyond this the minimap shows no node, whatever the zoom: on 70862 nodes were read up
+-- to 186 yards away and gone at 195. A node shown farther out is off the radar at once.
+Scanner.NODE_RANGE = 190
 -- The search stops growing the map here; its last quadrant is then about 3 yards wide.
 -- Off screen and invisible, a map wider than the screen costs nothing visible.
 local SEARCH_MAX_PX = 1400
@@ -74,7 +79,6 @@ local searchFailedAt = {}
 local reachLook = 0
 -- set when the filters change: nodes they hid so far may now belong on the radar
 local checkSoon = false
-local lastReadingAt = -math.huge
 -- per presence square, the difference last logged
 local lastDifference = {}
 -- invalid readings per reason since it was last logged, and when that was
@@ -91,11 +95,36 @@ end
 
 local stats = { readings = 0, invalid = 0, presence = 0, spots = 0, searches = 0,
 	foundBySearch = 0, foundAtSpawn = 0, lost = 0, spawnReadings = 0, spawnHits = 0,
-	searchedNearSpawn = 0, searchedFarFromSpawn = 0, invalidWhy = {} }
+	searchedNearSpawn = 0, searchedFarFromSpawn = 0, farthestRead = 0, invalidWhy = {} }
 -- per zone: searched nodes near a spawn point, the spots of those far from one, and
 -- nodes found at a spawn point
 local trust = {}
 local distrustedNames = {}
+
+-- the client's node range is not known exactly; a node read beyond this is logged
+local FAR_READ_LOG = 170
+
+local function distanceFromPlayer(east, north)
+	local playerEast, playerNorth = world.position()
+	if not playerEast then return nil end
+	return math.sqrt((east - playerEast) ^ 2 + (north - playerNorth) ^ 2)
+end
+
+-- Every node the minimap names passes here, so the farthest of them bounds the range at
+-- which the client shows nodes.
+local function noteRead(name, east, north)
+	local distance = distanceFromPlayer(east, north)
+	if not distance or distance <= stats.farthestRead then return end
+	stats.farthestRead = distance
+	if distance > FAR_READ_LOG then
+		log("farthest read so far: %s %.0f yd away", name, distance)
+	end
+end
+
+local function confirm(hit)
+	hit.seenAt = GetTime()
+	noteRead(hit.name, hit.east, hit.north)
+end
 
 local function spawnsUsable()
 	return Candidates:Available()
@@ -238,8 +267,9 @@ local function settleSpot(names, east, north, source)
 		if world.isNode(name) then
 			local key = nearestHit(name, east, north)
 			if key then
-				world.hits[key].seenAt = GetTime()
+				confirm(world.hits[key])
 			else
+				noteRead(name, east, north)
 				world.addHit(name, east, north, source)
 				added = added + 1
 			end
@@ -255,9 +285,10 @@ local function recheck(key)
 	local names = readSpot(hit.east, hit.north)
 	if not names or not world.hits[key] then return end
 	if count(names, hit.name) > 0 then
-		hit.seenAt = GetTime()
+		confirm(hit)
 	else
-		log("gone: %s at %s - its spot reads [%s]", hit.name, where(hit.east, hit.north),
+		log("gone: %s at %s, %.0f yd away - its spot reads [%s]", hit.name,
+			where(hit.east, hit.north), distanceFromPlayer(hit.east, hit.north) or -1,
 			table.concat(names, ", "))
 		world.removeHit(key, "gone")
 		stats.lost = stats.lost + 1
@@ -403,6 +434,7 @@ local function findMissing(name, number, squareEast, squareNorth, half)
 		judgeSearched(kind, east, north)
 		east, north = snap(kind, east, north)
 		if nearestHit(name, east, north) then return end
+		noteRead(name, east, north)
 		world.addHit(name, east, north, "search")
 		stats.foundBySearch = stats.foundBySearch + 1
 	end
@@ -443,7 +475,7 @@ local function window(label, dx, dy, half, rechecked)
 		-- a name read as often as it is shown confirms its nodes in the edge band too
 		local square = (seen[hit.name] or 0) >= (shownOuter[hit.name] or 0) and outer or inner
 		if not gone[hit.name] and inSquare(hit, readEast, readNorth, square) then
-			hit.seenAt = GetTime()
+			confirm(hit)
 		end
 	end
 
@@ -516,7 +548,7 @@ local function presence(points)
 	return complete
 end
 
--- Whether a spawn point came into reach, or was last checked long ago, and those spawn
+-- Whether a spawn point came into sight, or was last checked long ago, and those spawn
 -- points: the presence check that follows reads the squares holding them, so each is
 -- marked as looked at; a node it shows that nobody knows of is looked for at its spawn
 -- points first.
@@ -525,15 +557,21 @@ local function reach(now)
 	local east, north, radius = world.position()
 	if not east or not spawnsUsable() then return false, "any node may stand here without spawn data" end
 	local due, wanted, points = false, nil, {}
-	-- in reach now but not at the previous look, however long the routine waited between
+	-- in sight now but not at the previous look, however long the routine waited between
 	reachLook = reachLook + 1
-	Candidates:Near(east, north, radius * 0.97, function(candidate)
-		local entered = candidate.reachLook ~= reachLook - 1
-		candidate.reachLook = reachLook
+	local sight = math.min(radius * MAP_EDGE_SHARE, SIGHT)
+	Candidates:Near(east, north, radius * MAP_EDGE_SHARE, function(candidate, dx, dy)
+		local inSight = dx * dx + dy * dy <= sight * sight
+		local entered = false
+		if inSight then
+			entered = candidate.reachLook ~= reachLook - 1
+			candidate.reachLook = reachLook
+		end
 		if not world.tracked[candidate.kind] then return end
 		-- a node the filters hide is not worth a reading
 		if candidate.name and not world.wanted(candidate.name) then return end
 		wanted = wanted or "spawn point of " .. (candidate.name or "an unnamed node") .. " in reach"
+		if not inSight then return end
 		if not entered and now - (candidate.checkedAt or -math.huge) < RECHECK then return end
 		-- checked by the presence check that follows, not read at its spot
 		candidate.checkedAt = now
@@ -553,7 +591,8 @@ local function shownWantedInReach()
 	if not east then return nil end
 	for _, hit in pairs(world.hits) do
 		local dx, dy = hit.east - east, hit.north - north
-		if dx * dx + dy * dy <= radius * radius and world.wanted(hit.name) then
+		local reach = math.min(radius, Scanner.NODE_RANGE)
+		if dx * dx + dy * dy <= reach * reach and world.wanted(hit.name) then
 			return hit.name .. " on the radar"
 		end
 	end
@@ -562,9 +601,6 @@ end
 local function track()
 	local lastPresenceAt = -math.huge
 	while true do
-		-- a burst ends when the routine waits; the next one keeps its distance
-		local rest = BURST_GAP - (GetTime() - lastReadingAt)
-		if rest > 0 then wait(rest) end
 		local due, wanted, points = reach(GetTime())
 		-- A check is worth its blink only where a node the radar would show can stand:
 		-- a spawn point of one in reach, or one already shown that may have gone.
@@ -581,7 +617,7 @@ local function track()
 			lastPresenceAt = GetTime()
 			world.cycleDone()
 		elseif due then
-			log("check: spawn point of %s came into reach", due)
+			log("check: spawn point of %s came into sight", due)
 			presence(points)
 			world.cycleDone()
 		end
@@ -689,7 +725,6 @@ local function collect(free)
 	local east, north, radius = world.position()
 	local ox, oy = Map:CursorOffset()
 	stats.readings = stats.readings + 1
-	lastReadingAt = GetTime()
 	if names and east then
 		local yardsPerUnit = geometry(request.pixels, radius)
 		resume(names, east + ox * yardsPerUnit, north + oy * yardsPerUnit)
