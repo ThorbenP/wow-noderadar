@@ -25,18 +25,20 @@ frame, the buttons and pins of your addons, your arrow and dots for the nodes on
 radar and your group. It fades back into
 the real minimap a moment later.
 
-- It happens every twenty seconds, the moment a known spawn point comes into range
+- It happens every ten seconds, the moment a known spawn point comes into range
   (with GatherMate2), and for a little longer when a new node turns up.
 - With GatherMate2, NodeRadar only looks where a node you want can spawn: no spawn
   point of one in range and none on the radar, no blink at all. Nodes your filters
   hide cost nothing. Where GatherMate2's spawn points turn out not to match a zone,
-  NodeRadar ignores them there and checks every twenty seconds.
+  NodeRadar ignores them there and checks every ten seconds.
 - While it is away the minimap is invisible, so nothing shows at your cursor. Quest
   areas, the group finder's eye and frames other addons attach to the minimap hide
   with it.
-- NodeRadar only does it while your mouse rests on open world. It never gets in the
-  way when you point at a monster, an NPC or a node, use a window or a bar, turn the
-  camera or aim a spell — it simply waits, and the radar updates a moment later.
+- NodeRadar only does it while your mouse is on open world, resting or moving evenly.
+  It never gets in the way when you point at a monster, an NPC or a node, use a window
+  or a bar, turn the camera or aim a spell — it simply waits, and the radar updates a
+  moment later. It also waits on a flight path and while a merchant, quest giver,
+  bank, mailbox, auction house or trade window is open.
 
 Blizzard may restrict this further in a later update. If that happens, NodeRadar
 stops finding nodes until a new way is found.
@@ -56,8 +58,11 @@ without them too.
 - **Only what is really there** — every icon is a node your minimap shows right now;
   a node someone else just gathered disappears
 - **A sound** when a new node you can gather comes into range
-- **Skill colours** — nodes beyond your skill show red, or can be hidden entirely,
-  just like grey nodes that no longer give a skill-up
+- **Skill colours** — a frame around each icon in your skill's colour, from red for
+  a node beyond your skill through orange, yellow and green to grey; nodes beyond your
+  skill can be hidden entirely, just like grey ones that no longer give a skill-up
+- **Above, below or in a cave** — an arrow on the icon shows a node above or below
+  you, as the minimap does; one in a cave gets a down arrow
 - **Pick your herbs and ores** — one checkbox each
 - **Required skill in the minimap tooltip** — hover a node and see "Requires Mining
   (75)", coloured from red to grey
@@ -95,7 +100,8 @@ Open them with `/nr options`, the gear button in the NodeRadar window, or
 - **Radar** — size, icon size, opacity, distances, range rings
 - **Which nodes** — hide nodes beyond your skill or without a skill-up, choose herbs
   and ores
-- **Hints** — highlight and sound for new nodes, red icons, skill in the tooltip
+- **Hints** — highlight and sound for new nodes, frames in your skill's colour, skill
+  in the tooltip
 - **General** — the NodeRadar window, start on login, hide in combat
 
 ## FAQ
@@ -113,8 +119,9 @@ in the settings.
 No, but it is recommended — see *GatherMate2 is recommended* above.
 
 **The radar is slow to show a node.**
-NodeRadar reads the minimap only while your mouse rests on open world. If the cursor
-keeps moving, sits on your bars, or you steer with a mouse button held, it waits.
+NodeRadar reads the minimap only while your mouse is on open world and rests or moves
+evenly. If the cursor jerks around, sits on your bars, or you steer with a mouse button
+held, it waits.
 
 ## Known limitations
 
@@ -141,15 +148,27 @@ NodeRadar is free and stays free. If it saves you time and you'd like to say tha
 - How it reads the minimap: Forever lets addons read the minimap's mouseover only
   under the real cursor (`Minimap:UpdateMouseoverAtPoint` was disabled in build
   70862), and resolves it once per frame. So for one reading NodeRadar moves the
-  minimap — invisible, its icons shrunk, addon pins switched off — under the resting
-  cursor and reads `C_TooltipInfo.GetMinimapMouseover` the next frame; the map is back in its
-  place once a burst of readings ends. Other minimap addons' hooks are bypassed with
-  the frame type's own methods.
+  minimap — hidden, its icons shrunk, addon pins switched off — to where the cursor
+  will be a frame later, if it keeps moving as it did over the last frame, and reads
+  `C_TooltipInfo.GetMinimapMouseover` then; a reading counts only if the cursor ended
+  within two pixels of that point. The map is back in its place once a burst of
+  readings ends. Other minimap addons' hooks are bypassed with the frame type's own
+  methods.
+  - The map hides behind a transparent mask (`Empty.tga`), its own frames and textures
+    at alpha 0: below an alpha of 1 the client redraws the terrain empty until the
+    player moves. The mask it wears at home is the last one an addon set, recorded by
+    a hook, as the client has no getter. Without `Empty.tga` - added while the game
+    runs - the map hides by alpha. Buttons that addons show only while the cursor is
+    over the map fade in during a reading and out at home after it; they are shrunk
+    out of sight until hidden again.
+  - Each mouseover row carries its node's height: the client draws a node above or
+    below the player behind an arrow from `Minimap-PositionArrows` (up arrow in the
+    top half) and writes one in a cave in grey.
   - A node's hit square is a fixed 16 screen pixels. Shrunk to about 21 pixels most
     of the map fits under one, so a single reading counts every node in a square
     around the player. The presence check reads that square and one pushed to each
     side - together the whole reach - and compares the counts with what the radar
-    shows: every twenty seconds while a GatherMate2 spawn point of a node the
+    shows: every ten seconds while a GatherMate2 spawn point of a node the
     filters let through is in reach or such a node is on the radar - always, without
     spawn data - and when a filter changes what it lets through. The client shows a
     node only within about 185 yards of the player, so a spawn point is read once it
@@ -159,9 +178,8 @@ NodeRadar is free and stays free. If it saves you time and you'd like to say tha
     quarter second later. The map is resized off screen a frame before it goes under
     the cursor and stays away until the burst ends; each reading's frame places the
     next one, so a burst takes a frame per reading plus one to settle each new size.
-    Alpha does not reach the icons the client draws itself - nodes, town and quest
-    markers, the player arrow - so `SetIconScale` shrinks them out of sight while the
-    map is away.
+    The icons the client draws itself - nodes, town and quest markers, the player
+    arrow - are shrunk out of sight with `SetIconScale` while the map is away.
   - Minimap buttons and map pins are placed by their addons from the map's width at
     that moment, so any that moved while the map was away get their anchor back, and
     the map stays in place for five seconds after a loading screen.
@@ -195,4 +213,6 @@ NodeRadar is free and stays free. If it saves you time and you'd like to say tha
 GPL-3.0-or-later, see [LICENSE](LICENSE). The node name list
 (`NodeRadar/Nodes.lua`) is based on [Spotnick's
 NodeRadar](https://github.com/Spotnick2/NodeRadar) under the MIT License; its licence
-text is in that file.
+text is in that file. Hiding the minimap behind an empty mask, foreseeing the cursor, reading
+cave nodes from grey names and pausing at NPC windows follow
+[Lueur](https://www.curseforge.com/wow/addons/lueur) by Armytille (MIT License).

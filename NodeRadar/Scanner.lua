@@ -23,7 +23,7 @@ local SPOT_PX = 256
 -- A presence check takes the map from its place for a few frames, so it runs rarely.
 -- Spawn points coming into reach are read the moment they do, and a node the player
 -- gathers leaves the radar with the cast.
-local PRESENCE_INTERVAL = 20
+local PRESENCE_INTERVAL = 10
 -- how often the routine looks for spawn points that came into sight; costs no reading
 -- unless one did
 local REACH_INTERVAL = 0.25
@@ -43,6 +43,8 @@ local QUADRANT_OVERLAP = 1.25
 local MAP_EDGE_SHARE = 0.97
 -- a spawn point read empty is read again after this long, unless something asks sooner
 local RECHECK = 120
+-- a check whose readings did not all count is repeated after this long
+local RETRY = 1
 -- readings spent per cycle on single spots before the presence check comes round again
 local SPOTS_PER_CYCLE = 6
 -- a spawn point or a reading this close to a node already shown is that node, in yards
@@ -121,9 +123,32 @@ local function noteRead(name, east, north)
 	end
 end
 
-local function confirm(hit)
+-- `height`: what the reading says of the node's height (Map:Read), or nil when it cannot
+-- tell this node from others of its name
+local function confirm(hit, height)
 	hit.seenAt = GetTime()
+	if height ~= nil then hit.height = height or nil end
 	noteRead(hit.name, hit.east, hit.north)
+end
+
+-- Per name, the height its rows in a reading agree on, or "mixed".
+local function heightsOf(names, heights)
+	local byName = {}
+	for index, name in ipairs(names) do
+		local height = heights and heights[index] or false
+		if byName[name] == nil then
+			byName[name] = height
+		elseif byName[name] ~= height then
+			byName[name] = "mixed"
+		end
+	end
+	return byName
+end
+
+local function heightFor(byName, name)
+	local height = byName[name]
+	if height == "mixed" then return nil end
+	return height
 end
 
 local function spawnsUsable()
@@ -199,8 +224,8 @@ local function geometry(pixels, radius)
 end
 
 -- Inside the routine: one reading of the point (east, north) - the player when nil - on
--- a map `pixels` across. Returns the names and the world point actually read, or nil
--- when the reading did not count.
+-- a map `pixels` across. Returns the names, the world point actually read and the
+-- names' heights, or nil when the reading did not count.
 local function sample(pixels, east, north)
 	return coroutine.yield("sample", pixels, east, north)
 end
@@ -255,22 +280,23 @@ local function nearAnyHit(kind, east, north)
 end
 
 local function readSpot(east, north)
-	local names, readEast, readNorth = sample(SPOT_PX, east, north)
+	local names, readEast, readNorth, heights = sample(SPOT_PX, east, north)
 	if names then stats.spots = stats.spots + 1 end
-	return names, readEast, readNorth
+	return names, readEast, readNorth, heights
 end
 
 -- Confirms or adds every node a spot reading names. Returns how many were new.
-local function settleSpot(names, east, north, source)
+local function settleSpot(names, east, north, source, heights)
 	local added = 0
+	local byName = heightsOf(names, heights)
 	for _, name in ipairs(names) do
 		if world.isNode(name) then
 			local key = nearestHit(name, east, north)
 			if key then
-				confirm(world.hits[key])
+				confirm(world.hits[key], heightFor(byName, name))
 			else
 				noteRead(name, east, north)
-				world.addHit(name, east, north, source)
+				world.addHit(name, east, north, source, heightFor(byName, name))
 				added = added + 1
 			end
 		end
@@ -282,10 +308,10 @@ end
 local function recheck(key)
 	local hit = world.hits[key]
 	if not hit then return end
-	local names = readSpot(hit.east, hit.north)
+	local names, _, _, heights = readSpot(hit.east, hit.north)
 	if not names or not world.hits[key] then return end
 	if count(names, hit.name) > 0 then
-		confirm(hit)
+		confirm(hit, heightFor(heightsOf(names, heights), hit.name))
 	else
 		log("gone: %s at %s, %.0f yd away - its spot reads [%s]", hit.name,
 			where(hit.east, hit.north), distanceFromPlayer(hit.east, hit.north) or -1,
@@ -346,7 +372,7 @@ local function search(name, east, north, half)
 		east, north, half = chosenEast, chosenNorth, reach
 	end
 
-	local names, spotEast, spotNorth = readSpot(east, north)
+	local names, spotEast, spotNorth, heights = readSpot(east, north)
 	readings = readings + 1
 	if not names or count(names, name) == 0 then
 		return fail("the spot at " .. where(east, north) .. " does not read it")
@@ -366,7 +392,7 @@ local function search(name, east, north, half)
 		return fail("the spot at " .. where(east, north) .. " reads only nodes already shown")
 	end
 	log("search placed %s at %s in %d readings", name, where(east, north), readings)
-	return east, north
+	return east, north, heightFor(heightsOf(names, heights), name)
 end
 
 -- A spawn point of the same kind near a searched position is where the node really is.
@@ -407,13 +433,13 @@ local function findMissing(name, number, squareEast, squareNorth, half)
 		end)
 		for _, candidate in ipairs(open) do
 			if number <= 0 or spent >= SPOTS_PER_CYCLE then break end
-			local names = readSpot(candidate.east, candidate.north)
+			local names, _, _, heights = readSpot(candidate.east, candidate.north)
 			spent = spent + 1
 			if names then
 				candidate.probedAt = GetTime()
 				local added = 0
 				if count(names, name) > 0 then
-					added = settleSpot(names, candidate.east, candidate.north, "spawn point")
+					added = settleSpot(names, candidate.east, candidate.north, "spawn point", heights)
 					stats.foundAtSpawn = stats.foundAtSpawn + added
 					number = number - added
 				end
@@ -426,7 +452,7 @@ local function findMissing(name, number, squareEast, squareNorth, half)
 	-- presence check comes round too rarely to leave the rest for later
 	if GetTime() - (searchFailedAt[name] or -math.huge) <= SEARCH_BACKOFF then return end
 	for _ = 1, math.min(number, SEARCHES_PER_CYCLE) do
-		local east, north = search(name, squareEast, squareNorth, half)
+		local east, north, height = search(name, squareEast, squareNorth, half)
 		if not east then
 			searchFailedAt[name] = GetTime()
 			return
@@ -435,7 +461,7 @@ local function findMissing(name, number, squareEast, squareNorth, half)
 		east, north = snap(kind, east, north)
 		if nearestHit(name, east, north) then return end
 		noteRead(name, east, north)
-		world.addHit(name, east, north, "search")
+		world.addHit(name, east, north, "search", height)
 		stats.foundBySearch = stats.foundBySearch + 1
 	end
 end
@@ -446,8 +472,9 @@ end
 local function window(label, dx, dy, half, rechecked)
 	local east, north = world.position()
 	if not east then return false end
-	local names, readEast, readNorth = sample(PRESENCE_PX, east + dx, north + dy)
+	local names, readEast, readNorth, heights = sample(PRESENCE_PX, east + dx, north + dy)
 	if not names then return false end
+	local byName = heightsOf(names, heights)
 	stats.presence = stats.presence + 1
 	local inner, outer = half * (1 - EDGE_MARGIN), half * (1 + EDGE_MARGIN)
 
@@ -475,7 +502,7 @@ local function window(label, dx, dy, half, rechecked)
 		-- a name read as often as it is shown confirms its nodes in the edge band too
 		local square = (seen[hit.name] or 0) >= (shownOuter[hit.name] or 0) and outer or inner
 		if not gone[hit.name] and inSquare(hit, readEast, readNorth, square) then
-			confirm(hit)
+			confirm(hit, heightFor(byName, hit.name))
 		end
 	end
 
@@ -613,12 +640,21 @@ local function track()
 			checkSoon = false
 			-- readings wait for a free cursor; a node confirmed by them is seen after this
 			local started = GetTime()
-			if presence() then Scanner.wholeCheckAt = started end
-			lastPresenceAt = GetTime()
+			if presence() then
+				Scanner.wholeCheckAt = started
+				lastPresenceAt = GetTime()
+			else
+				lastPresenceAt = GetTime() - PRESENCE_INTERVAL + RETRY
+				log("check incomplete, a reading did not count: again in %d s", RETRY)
+			end
 			world.cycleDone()
 		elseif due then
 			log("check: spawn point of %s came into sight", due)
-			presence(points)
+			if not presence(points) then
+				local again = GetTime() - RECHECK + RETRY
+				for _, point in ipairs(points) do point.checkedAt = again end
+				log("check incomplete, a reading did not count: again in %d s", RETRY)
+			end
 			world.cycleDone()
 		end
 		wait(REACH_INTERVAL)
@@ -641,7 +677,7 @@ function Scanner:Gathered(name)
 end
 
 -- context: position() -> east, north, radius; isNode(name); kindOf(name); tracked, the
--- kinds the minimap shows; hits; addHit(name, east, north, source); removeHit(key,
+-- kinds the minimap shows; hits; addHit(name, east, north, source, height); removeHit(key,
 -- reason); cycleDone(); wanted(name), whether the filters let such a node onto the radar
 function Scanner:Start(context)
 	world = context
@@ -692,13 +728,14 @@ local function resume(...)
 	end
 end
 
-local function place()
+-- `ahead`: frames until the reading is read - one, or two with a frame to settle
+local function place(ahead)
 	local east, north, radius = world.position()
 	if not east then return false end
 	local yardsPerUnit = geometry(request.pixels, radius)
 	local ox = request.east and (request.east - east) / yardsPerUnit or 0
 	local oy = request.north and (request.north - north) / yardsPerUnit or 0
-	Map:Place(ox, oy)
+	Map:Place(ox, oy, ahead)
 	return true
 end
 
@@ -711,7 +748,7 @@ local function proceed(free)
 		local ready = Map:Ready(request.pixels)
 		-- the icons are shrunk already, so a new size needs no frame off screen
 		if not ready then Map:Resize(request.pixels) end
-		if place() then
+		if place(ready and 1 or 2) then
 			phase = ready and "read" or "settle"
 			return
 		end
@@ -721,13 +758,13 @@ local function proceed(free)
 end
 
 local function collect(free)
-	local names, why = Map:Read()
+	local names, why, heights = Map:Read()
 	local east, north, radius = world.position()
 	local ox, oy = Map:CursorOffset()
 	stats.readings = stats.readings + 1
 	if names and east then
 		local yardsPerUnit = geometry(request.pixels, radius)
-		resume(names, east + ox * yardsPerUnit, north + oy * yardsPerUnit)
+		resume(names, east + ox * yardsPerUnit, north + oy * yardsPerUnit, heights)
 		return proceed(free)
 	end
 	why = why or "no position"
@@ -750,7 +787,7 @@ function Scanner:Step(free)
 	if not routine then return end
 	if phase == "read" then return collect(free) end
 	if phase == "prepared" then
-		if free and place() then
+		if free and place(2) then
 			phase = "settle"
 		else
 			Map:GoHome()

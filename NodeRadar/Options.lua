@@ -160,7 +160,7 @@ local function buildWindow()
 	add(checkbox(settings, "Sound when a new node appears", RIGHT, -368,
 		function() return db.playSound end,
 		function(value) db.playSound = value end))
-	add(checkbox(settings, "Red when my skill is too low", LEFT, -398,
+	add(checkbox(settings, "Frame in my skill's colour", LEFT, -398,
 		function() return db.colorBySkill end,
 		function(value) db.colorBySkill = value end))
 	add(checkbox(settings, "Skill in the minimap tooltip", RIGHT, -398,

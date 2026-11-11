@@ -236,7 +236,8 @@ local function recall(name, east, north)
 	end
 end
 
-local function addHit(name, east, north, source)
+-- `height`: "above", "below" or "cave" when the reading tells (Map:Read)
+local function addHit(name, east, north, source, height)
 	local info = nodeInfo(name)
 	if not info then return end
 	local earlier = recall(name, east, north)
@@ -253,14 +254,16 @@ local function addHit(name, east, north, source)
 				end
 			end)
 		end
-		log("new: %s at %.0f/%.0f, %.0f yd away (%s), nearest spawn point %s", name, east,
+		log("new: %s at %.0f/%.0f, %.0f yd away (%s%s), nearest spawn point %s", name, east,
 			north, math.sqrt((east - playerEast) ^ 2 + (north - playerNorth) ^ 2),
-			source or "?", spawn and string.format("%.1f yd", spawn) or "none within 100 yd")
+			source or "?", height and ", " .. height or "",
+			spawn and string.format("%.1f yd", spawn) or "none within 100 yd")
 	end
 	nextHitID = nextHitID + 1
 	local now = GetTime()
 	local hit = { name = name, kind = info[1], skill = info[2], item = info[3],
-		east = east, north = north, seenAt = now, appearedAt = earlier and earlier.appearedAt or now,
+		east = east, north = north, height = height or nil, seenAt = now,
+		appearedAt = earlier and earlier.appearedAt or now,
 		texture = textureFor(name, info[1], info[3]) }
 	hits["node" .. nextHitID] = hit
 	if not earlier and baselineTaken and db.playSound and wanted(hit) and not skillTooLow(hit.kind, hit.skill)
@@ -297,9 +300,26 @@ local context = {
 local SETTLE_AFTER_LOADING = 5
 local settledAt = 0
 
+-- Open NPC windows stop the readings, so that addons selling junk or handing in quests
+-- by themselves never meet one. Names from Enum.PlayerInteractionType.
+local NPC_WINDOWS = { "Merchant", "QuestGiver", "Gossip", "Banker", "MailInfo", "Auctioneer",
+	"TradePartner" }
+
+local function npcWindow()
+	local types, manager = Enum.PlayerInteractionType, C_PlayerInteractionManager
+	if not types or not manager or not manager.IsInteractingWithNpcOfType then return nil end
+	for _, name in ipairs(NPC_WINDOWS) do
+		if types[name] and manager.IsInteractingWithNpcOfType(types[name]) == true then return name end
+	end
+end
+
 -- One source for why the minimap cannot be read, in the order that matters to the player.
 local function holdReason()
 	if not next(tracked) then return "no gathering tracking is active" end
+	-- nothing can be gathered from a flight path
+	if UnitOnTaxi("player") == true then return "on a flight path" end
+	local window = npcWindow()
+	if window then return "an NPC window is open (" .. window .. ")" end
 	if not Map:IsAway() and not Minimap:IsVisible() then return "the minimap is hidden" end
 	-- the gamepad's cursor is not the one the minimap is placed under
 	if InputUtil.IsGamepadUIEnabled() then return "the gamepad cursor is in use" end
@@ -354,7 +374,9 @@ local PAUSE_LOG_SECONDS = 2
 local busySince, busyWhy
 
 local function cursorFree(now)
-	local why = cursorBusy()
+	-- sampled every frame, whatever else keeps the cursor busy
+	local steady = Map:CursorSteady()
+	local why = cursorBusy() or not steady and "the cursor changes speed" or nil
 	-- a name the client hands out secret despite frameName's checks must not be compared
 	if isSecret(why) then why = "the cursor is on a protected frame" end
 	if why ~= busyWhy then
@@ -429,9 +451,10 @@ local function render(now)
 				end
 				entry.key, entry.rx, entry.ry = key, right / range, forward / range
 				entry.distance, entry.texture = distance, hit.texture
-				entry.appearedAt = hit.appearedAt
+				entry.appearedAt, entry.height = hit.appearedAt, hit.height
 				-- the skill rises while the node sits on the radar
-				entry.tooLow = skillTooLow(hit.kind, hit.skill)
+				local level = difficulty(hit.kind, hit.skill)
+				entry.frameColor = level and DIFFICULTY_COLORS[level]
 			end
 		end
 	end
@@ -516,7 +539,10 @@ driver:SetScript("OnUpdate", function(_, elapsed)
 		return
 	end
 
-	if Map:IsHeld() then Scanner:Step(cursorFree(now)) end
+	if Map:IsHeld() then
+		Map:Tick()
+		Scanner:Step(cursorFree(now))
+	end
 
 	local hidden = hiddenInCombat()
 	Radar:SetShown(not hidden)
@@ -776,6 +802,9 @@ local function snapshotLines()
 	append(lines, "position=%s instance=%s facing=%s",
 		playerEast and string.format("%.1f/%.1f", playerEast, playerNorth) or "none",
 		tostring(playerInstance), tostring(playerFacing()))
+	local mask, byAddon = Map:HomeMask()
+	append(lines, "minimap mask at home: %s (%s)", tostring(mask),
+		byAddon and "set by an addon" or "Blizzard's, guessed from the shape")
 	append(lines, "skill: herbalism=%s mining=%s; tracking: herb=%s ore=%s",
 		tostring(skillRank.herb), tostring(skillRank.ore),
 		tostring(tracked.herb or false), tostring(tracked.ore or false))

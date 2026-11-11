@@ -9,6 +9,14 @@ local GRID_COLOR = { 0.6, 0.9, 0.7 }
 -- how long a newly confirmed node is highlighted
 local SPARKLE_SECONDS = 8
 local SPARKLE_TEXTURE = "Interface\\Cooldown\\star4"
+-- a frame in the skill colour around the icon, and the height arrow the minimap shows
+local FRAME_TEXTURE = "Interface\\AddOns\\NodeRadar\\NodeFrame.tga"
+local FRAME_SIZE = 1.2
+local ARROW_TEXTURE = "Interface\\Minimap\\Minimap-PositionArrows"
+local ARROW_SIZE = 0.6
+-- the up arrow fills the texture's top 16 x 16, the down arrow its bottom; a node in a
+-- cave reads as below the player
+local ARROW_COORDS = { above = { 0, 1, 0, 0.5 }, below = { 0, 1, 0.5, 1 }, cave = { 0, 1, 0.5, 1 } }
 
 local frame, grid
 local EMPTY = {}
@@ -22,6 +30,12 @@ local function createPin()
 	local pin = CreateFrame("Frame", nil, frame)
 	pin.icon = pin:CreateTexture(nil, "ARTWORK")
 	pin.icon:SetAllPoints()
+	pin.frame = pin:CreateTexture(nil, "BORDER")
+	pin.frame:SetTexture(FRAME_TEXTURE)
+	pin.frame:SetPoint("CENTER")
+	pin.arrow = pin:CreateTexture(nil, "OVERLAY")
+	pin.arrow:SetTexture(ARROW_TEXTURE)
+	pin.arrow:SetPoint("CENTER", pin, "TOPRIGHT")
 	pin.label = pin:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 	pin.label:SetPoint("TOP", pin, "BOTTOM", 0, 2)
 
@@ -115,6 +129,8 @@ end
 local function sizePin(pin)
 	pin:SetSize(db.iconSize, db.iconSize)
 	pin.sparkle:SetSize(db.iconSize * 2.2, db.iconSize * 2.2)
+	pin.frame:SetSize(db.iconSize * FRAME_SIZE, db.iconSize * FRAME_SIZE)
+	pin.arrow:SetSize(db.iconSize * ARROW_SIZE, db.iconSize * ARROW_SIZE)
 end
 
 function Radar:ApplySettings()
@@ -192,12 +208,18 @@ function Radar:Render(entries, count)
 		active[entry.key] = true
 
 		pin.icon:SetTexture(entry.texture)
-		-- red means your gathering skill is below what the node needs
-		if entry.tooLow and db.colorBySkill then
-			pin.icon:SetVertexColor(1, 0.42, 0.42)
-		else
-			pin.icon:SetVertexColor(1, 1, 1)
+		local color = db.colorBySkill and entry.frameColor
+		if color then
+			pin.frame:SetVertexColor(color[1], color[2], color[3])
+			pin.frame:SetAlpha(db.nodeAlpha)
 		end
+		pin.frame:SetShown(color and true or false)
+		local coords = entry.height and ARROW_COORDS[entry.height]
+		if coords then
+			pin.arrow:SetTexCoord(coords[1], coords[2], coords[3], coords[4])
+			pin.arrow:SetAlpha(db.nodeAlpha)
+		end
+		pin.arrow:SetShown(coords ~= nil)
 		pin.icon:SetAlpha(db.nodeAlpha)
 		pin.label:SetAlpha(db.nodeAlpha)
 		pin:ClearAllPoints()

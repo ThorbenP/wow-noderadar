@@ -24,18 +24,20 @@ frame, the buttons and pins of your addons, your arrow and dots for the nodes on
 radar and your group. It fades back into
 the real minimap a moment later.
 
-- It happens every twenty seconds, the moment a known spawn point comes into range
+- It happens every ten seconds, the moment a known spawn point comes into range
   (with GatherMate2), and for a little longer when a new node turns up.
 - With GatherMate2, NodeRadar only looks where a node you want can spawn: no spawn
   point of one in range and none on the radar, no blink at all. Nodes your filters
   hide cost nothing. Where GatherMate2's spawn points turn out not to match a zone,
-  NodeRadar ignores them there and checks every twenty seconds.
+  NodeRadar ignores them there and checks every ten seconds.
 - While it is away the minimap is invisible, so nothing shows at your cursor. Quest
   areas, the group finder's eye and frames other addons attach to the minimap hide
   with it.
-- NodeRadar only does it while your mouse rests on open world. It never gets in the
-  way when you point at a monster, an NPC or a node, use a window or a bar, turn the
-  camera or aim a spell — it simply waits, and the radar updates a moment later.
+- NodeRadar only does it while your mouse is on open world, resting or moving evenly.
+  It never gets in the way when you point at a monster, an NPC or a node, use a window
+  or a bar, turn the camera or aim a spell — it simply waits, and the radar updates a
+  moment later. It also waits on a flight path and while a merchant, quest giver,
+  bank, mailbox, auction house or trade window is open.
 
 Blizzard may restrict this further in a later update. If that happens, NodeRadar
 stops finding nodes until a new way is found.
@@ -55,8 +57,11 @@ without them too.
 - **Only what is really there** — every icon is a node your minimap shows right now;
   a node someone else just gathered disappears
 - **A sound** when a new node you can gather comes into range
-- **Skill colours** — nodes beyond your skill show red, or can be hidden entirely,
-  just like grey nodes that no longer give a skill-up
+- **Skill colours** — a frame around each icon in your skill's colour, from red for
+  a node beyond your skill through orange, yellow and green to grey; nodes beyond your
+  skill can be hidden entirely, just like grey ones that no longer give a skill-up
+- **Above, below or in a cave** — an arrow on the icon shows a node above or below
+  you, as the minimap does; one in a cave gets a down arrow
 - **Pick your herbs and ores** — one checkbox each
 - **Required skill in the minimap tooltip** — hover a node and see "Requires Mining
   (75)", coloured from red to grey
@@ -94,7 +99,8 @@ Open them with `/nr options`, the gear button in the NodeRadar window, or
 - **Radar** — size, icon size, opacity, distances, range rings
 - **Which nodes** — hide nodes beyond your skill or without a skill-up, choose herbs
   and ores
-- **Hints** — highlight and sound for new nodes, red icons, skill in the tooltip
+- **Hints** — highlight and sound for new nodes, frames in your skill's colour, skill
+  in the tooltip
 - **General** — the NodeRadar window, start on login, hide in combat
 
 ## FAQ
@@ -112,8 +118,9 @@ in the settings.
 No, but it is recommended — see *GatherMate2 is recommended* above.
 
 **The radar is slow to show a node.**
-NodeRadar reads the minimap only while your mouse rests on open world. If the cursor
-keeps moving, sits on your bars, or you steer with a mouse button held, it waits.
+NodeRadar reads the minimap only while your mouse is on open world and rests or moves
+evenly. If the cursor jerks around, sits on your bars, or you steer with a mouse button
+held, it waits.
 
 ## Known limitations
 

@@ -43,18 +43,14 @@ local SLOW_SNAPSHOT_MS = 4
 local frame
 local homeAt
 local failed = false
--- the mask a minimap addon gave the map; the client has no getter
-local maskSet
-hooksecurefunc(Minimap, "SetMaskTexture", function(_, mask)
-	if type(mask) == "string" or type(mask) == "number" then maskSet = mask end
-end)
 
 local function isSecret(value)
 	return issecretvalue ~= nil and issecretvalue(value)
 end
 
 local function mask()
-	if maskSet then return maskSet end
+	local set, byAddon = NR.Map:HomeMask()
+	if byAddon then return set end
 	if GetMinimapShape and GetMinimapShape() == "SQUARE" then return SQUARE_MASK end
 	return CIRCLE_MASK
 end

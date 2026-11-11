@@ -4,7 +4,7 @@ local ADDON, NR = ...
 -- but the real cursor. The client resolves that mouseover once per frame, before
 -- OnUpdate, for wherever the minimap was drawn - so a point is read by moving the minimap
 -- under the resting cursor in one frame and asking C_TooltipInfo.GetMinimapMouseover()
--- in the next. Alpha 0 keeps the reading intact and no GameTooltip is shown for it.
+-- in the next. A hidden map still reads, and no GameTooltip is shown for it.
 --
 -- For the frames a reading takes the minimap is invisible and out of the player's way;
 -- between readings it is back in its place.
@@ -21,7 +21,7 @@ NR.IsSecret = isSecret
 -- and colours quest lines; a node has to read the same name either way.
 function NR.Plain(text)
 	text = text:gsub("|T.-|t", ""):gsub("|A.-|a", ""):gsub("|H.-|h(.-)|h", "%1")
-	text = text:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", ""):gsub("|n", " ")
+	text = text:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|cn[%w_]+:", ""):gsub("|r", ""):gsub("|n", " ")
 	return strtrim(text)
 end
 
@@ -32,8 +32,8 @@ Map.available = C_TooltipInfo ~= nil and type(C_TooltipInfo.GetMinimapMouseover)
 local PARK = -10000
 -- a second refresh of the blips after the map came home, once the client has settled
 local BLIP_REFRESH_DELAY = 0.1
--- A cursor that moved more than this many pixels since the map was placed was read
--- somewhere between the two points, so the reading does not count.
+-- A cursor that ended more than this many pixels from where the map was placed for it
+-- was read somewhere between the two points, so the reading does not count.
 local CURSOR_DRIFT_PX = 2
 -- how far down the minimap's frame tree addon pins and buttons are looked for
 local CHILD_DEPTH = 4
@@ -53,6 +53,124 @@ end
 local held
 local iconScale = 1
 local iconHidden = false
+
+-- Below an alpha of 1 the client redraws the map's terrain empty and keeps it so until
+-- the player moves (NodeSight 1.9.0 and Lueur 1.5.0 players saw it too). So the map hides
+-- behind a transparent mask, which covers what the client draws - terrain and blips -
+-- while its own frames and textures take alpha 0.
+local EMPTY_MASK = "Interface\\AddOns\\NodeRadar\\Empty.tga"
+local SQUARE_MASK = "Interface\\Buttons\\WHITE8X8"
+-- Forever's own round mask (Blizzard_Minimap Camelot skin, build 70245, after Lueur)
+local FOREVER_MASK = "ui-hud-minimap-frame-generic-mask"
+local CLASSIC_MASK = "Textures\\MinimapMask"
+
+-- the mask a minimap addon gave the map; the client has no getter
+local maskSet
+-- set while NodeRadar puts a mask back, which is no addon's choice
+local restoringMask = false
+hooksecurefunc(Minimap, "SetMaskTexture", function(_, mask)
+	if restoringMask or isSecret(mask) then return end
+	if type(mask) == "string" or type(mask) == "number" then maskSet = mask end
+end)
+
+-- The mask the map wears at home: one an addon set after NodeRadar loaded, or else
+-- Blizzard's for the map's shape. `known` says whether an addon set it.
+function Map:HomeMask()
+	if maskSet then return maskSet, true end
+	if GetMinimapShape and GetMinimapShape() == "SQUARE" then return SQUARE_MASK, false end
+	if C_Texture and C_Texture.GetAtlasInfo and C_Texture.GetAtlasInfo(FOREVER_MASK) then
+		return FOREVER_MASK, false
+	end
+	return CLASSIC_MASK, false
+end
+
+-- A file added while the game runs is found only after a restart; without it the map
+-- falls back to hiding by alpha.
+local maskLoads
+local function canMask()
+	if maskLoads == nil then
+		local probe = UIParent:CreateTexture(nil, "BACKGROUND")
+		probe:Hide()
+		maskLoads = probe:SetTexture(EMPTY_MASK) == true
+			and type(frameMethods.SetMaskTexture) == "function"
+		if NR.Log then
+			NR.Log("the minimap hides during readings behind %s", maskLoads and "an empty mask"
+				or "alpha 0 - restart the game to load the empty mask")
+		end
+	end
+	return maskLoads
+end
+
+-- Buttons shown only while the cursor is over the map - LibDBIcon's, SexyMap's - fade
+-- in when a reading puts the map under it, and fade out at home a moment later. Shrunk
+-- to this scale they do both out of sight, and stay shrunk until hidden again: at least
+-- SETTLE_MIN after the map came home, at most SETTLE_MAX, or at once when the cursor is
+-- on the map. After Lueur.
+local SHRINK_SCALE = 0.001
+local SETTLE_MIN, SETTLE_MAX = 1.5, 3
+-- shrunk frame -> its own scale; outlives the reading that shrank it
+local shrunk = {}
+
+local function locked(object)
+	return InCombatLockdown() and object.IsProtected and object:IsProtected()
+end
+
+local function unseen(object, alpha)
+	return alpha == 0 or not object:IsShown()
+end
+
+local function shrink(frame)
+	if shrunk[frame] or not frame.IsObjectType or not frame:IsObjectType("Frame")
+		or locked(frame) then
+		return
+	end
+	local scale = frame:GetScale()
+	if isSecret(scale) then return end
+	shrunk[frame] = scale
+	frame:SetScale(SHRINK_SCALE)
+end
+
+local function settle(now)
+	if not next(shrunk) then return end
+	local waited = GetTime() - (held and held.homeAt or -math.huge)
+	if not now and waited < SETTLE_MIN then return end
+	local over = Minimap:IsMouseOver()
+	for frame, scale in pairs(shrunk) do
+		local alpha = frame:GetAlpha()
+		if (now or over or waited > SETTLE_MAX or isSecret(alpha) or unseen(frame, alpha))
+			and not locked(frame) then
+			frame:SetScale(scale)
+			shrunk[frame] = nil
+		end
+	end
+end
+
+local function hideOwn(object)
+	if held.own[object] ~= nil or isSecret(object) then return end
+	local alpha = object:GetAlpha()
+	if isSecret(alpha) or locked(object) then return end
+	held.own[object] = alpha
+	object:SetAlpha(0)
+	if unseen(object, alpha) then shrink(object) end
+end
+
+-- The map's own frames and textures, which the mask leaves visible. Every frame of a
+-- reading: a button an addon shows when the cursor is over the map, and a pin it adds
+-- meanwhile, go out of sight again.
+local function hideOwnAll()
+	for object in pairs(held.own) do
+		local alpha = object:GetAlpha()
+		if not isSecret(alpha) and alpha > 0 then
+			object:SetAlpha(0)
+			shrink(object)
+		end
+	end
+	local count = Minimap:GetNumChildren()
+	if count == held.ownChildren then return end
+	held.ownChildren = count
+	for _, child in ipairs({ Minimap:GetChildren() }) do hideOwn(child) end
+	for _, region in ipairs({ Minimap:GetRegions() }) do hideOwn(region) end
+end
 
 -- The client offers no getter for the icon scale, so whatever another addon sets is
 -- remembered to be put back.
@@ -311,7 +429,14 @@ local function goAway()
 	held.clicks = Minimap:IsMouseClickEnabled()
 	held.wheel = Minimap:IsMouseWheelEnabled()
 
-	call("SetAlpha", 0)
+	held.masked = canMask()
+	if held.masked then
+		call("SetMaskTexture", EMPTY_MASK)
+		held.ownChildren = nil
+		hideOwnAll()
+	else
+		call("SetAlpha", 0)
+	end
 	Minimap:SetFrameStrata("TOOLTIP")
 	call("SetClampedToScreen", false)
 	Minimap:SetMouseClickEnabled(false)
@@ -334,7 +459,16 @@ local function comeHome()
 	call("ClearAllPoints")
 	for _, point in ipairs(held.points) do call("SetPoint", unpack(point)) end
 	call("SetSize", held.width, held.height)
-	call("SetAlpha", held.ownAlpha)
+	if held.masked then
+		-- through the hooks: an addon that keeps its own mask on the map sees it go back
+		restoringMask = true
+		pcall(Minimap.SetMaskTexture, Minimap, (Map:HomeMask()))
+		restoringMask = false
+		for object, alpha in pairs(held.own) do object:SetAlpha(alpha) end
+		wipe(held.own)
+	else
+		call("SetAlpha", held.ownAlpha)
+	end
 	Minimap:SetFrameStrata(held.strata)
 	call("SetClampedToScreen", held.clamped)
 	Minimap:SetMouseClickEnabled(held.clicks)
@@ -376,7 +510,9 @@ end
 -- Allows readings. The map stays in its place and goes away only for the frames a
 -- reading takes; its place is taken anew each time, so the player may move it between.
 function Map:Hold()
-	if not held then held = { mouse = {}, alpha = {}, buttons = {}, followers = {}, away = false } end
+	if not held then
+		held = { mouse = {}, alpha = {}, buttons = {}, followers = {}, own = {}, away = false }
+	end
 	return true
 end
 
@@ -386,8 +522,19 @@ function Map:Release()
 		if not self:CanChange() then return false end
 		comeHome()
 	end
+	settle(true)
 	held = nil
 	return true
+end
+
+-- Every frame while the map is held: what addons show on it while away goes out of sight
+-- again, and at home what was shrunk gets its size back once hidden.
+function Map:Tick()
+	if not held.away then
+		settle(false)
+	elseif held.masked then
+		hideOwnAll()
+	end
 end
 
 -- Whether the map is away and `pixels` across, ready to go under the cursor.
@@ -412,11 +559,31 @@ function Map:Resize(pixels)
 	call("SetSize", size, size)
 end
 
+-- The cursor as sampled once per frame, and how far it moved since the frame before.
+local cursor = { vx = 0, vy = 0 }
+
+-- Whether the cursor moves as it did a frame earlier - resting counts - so that where it
+-- will be when a reading is read can be foretold. Called once every frame.
+function Map:CursorSteady()
+	local x, y = GetCursorPosition()
+	local steady = false
+	if cursor.x then
+		local vx, vy = x - cursor.x, y - cursor.y
+		steady = math.abs(vx - cursor.vx) <= CURSOR_DRIFT_PX
+			and math.abs(vy - cursor.vy) <= CURSOR_DRIFT_PX
+		cursor.vx, cursor.vy = vx, vy
+	end
+	cursor.x, cursor.y = x, y
+	return steady
+end
+
 -- Puts the prepared minimap so that the point (ox, oy) - in map units from its centre -
--- lies under the cursor.
-function Map:Place(ox, oy)
+-- lies under the cursor `ahead` frames from now, when the reading is read: where the
+-- cursor will be if it keeps moving as it did over the last frame.
+function Map:Place(ox, oy, ahead)
 	local scale = Minimap:GetEffectiveScale()
 	local cursorX, cursorY = GetCursorPosition()
+	cursorX, cursorY = cursorX + cursor.vx * ahead, cursorY + cursor.vy * ahead
 	call("ClearAllPoints")
 	call("SetPoint", "CENTER", UIParent, "BOTTOMLEFT", cursorX / scale - ox, cursorY / scale - oy)
 	Minimap:UpdateBlips()
@@ -433,7 +600,51 @@ function Map:CursorOffset()
 	return cursorX / scale - mapX, cursorY / scale - mapY
 end
 
--- Every name under the cursor, or nil and why the reading does not count. The mouse
+local function isGrey(r, g, b)
+	if isSecret(r) or isSecret(g) or isSecret(b) then return false end
+	if type(r) ~= "number" or type(g) ~= "number" or type(b) ~= "number" then return false end
+	return math.abs(r - g) < 0.1 and math.abs(g - b) < 0.1 and r < 0.9
+end
+
+-- the first few height arrows go to the log as read, for a client that draws them anew
+local LOGGED_ARROWS = 3
+local loggedArrows = 0
+
+-- What a mouseover row says of its node's height: "above" or "below" the player, behind
+-- the height arrow the client draws instead of a dot - the up arrow in the top half of
+-- Minimap-PositionArrows - or "cave" for a name written in grey; false for neither.
+local function heightOf(row, lineGrey)
+	local arrow = row:match("|[TA][^|]*PositionArrow[^|]*|[ta]")
+	if arrow then
+		local lower, mark = arrow:lower(), nil
+		if lower:find("down", 1, true) then
+			mark = "below"
+		elseif lower:find("up", 1, true) then
+			mark = "above"
+		else
+			-- |Tpath:height:width:x:y:textureWidth:textureHeight:left:right:top:bottom|t
+			local fields = {}
+			for field in arrow:gmatch(":(%-?[%d%.]+)") do fields[#fields + 1] = tonumber(field) end
+			local textureHeight, top = fields[6], fields[9]
+			if textureHeight and top then mark = top >= textureHeight / 2 and "below" or "above" end
+		end
+		if loggedArrows < LOGGED_ARROWS and NR.Log then
+			loggedArrows = loggedArrows + 1
+			NR.Log("height arrow read as %s: %s", mark or "unknown", (arrow:gsub("|", "||")))
+		end
+		return mark or false
+	end
+	local r, g, b = row:match("|c%x%x(%x%x)(%x%x)(%x%x)")
+	if r then return isGrey(tonumber(r, 16) / 255, tonumber(g, 16) / 255, tonumber(b, 16) / 255) and "cave" or false end
+	local named = row:match("|cn([%w_]+):")
+	if named then
+		return (named:find("GRAY", 1, true) or named:find("DISABLED", 1, true)) and "cave" or false
+	end
+	return lineGrey and "cave" or false
+end
+
+-- Every name under the cursor and, per name, its height (heightOf), or nil and why the
+-- reading does not count. The mouse
 -- focus is no witness: the client moves it only when the mouse moves, not when the map
 -- moves under a resting cursor. What counts is that the cursor stayed put and lies on
 -- the map.
@@ -449,20 +660,26 @@ function Map:Read()
 	local half = Minimap:GetWidth() / 2
 	if math.abs(ox) > half or math.abs(oy) > half then return nil, "the cursor is off the map" end
 	local data = C_TooltipInfo.GetMinimapMouseover()
-	if data == nil then return {} end
+	if data == nil then return {}, nil, {} end
 	if isSecret(data) or type(data) ~= "table" or isSecret(data.lines) then
 		return nil, "the mouseover reads secret"
 	end
-	local names = {}
+	local names, heights = {}, {}
 	for _, line in ipairs(type(data.lines) == "table" and data.lines or {}) do
 		local text = type(line) == "table" and line.leftText or nil
 		if isSecret(text) then return nil, "a mouseover line reads secret" end
 		if type(text) == "string" then
+			local color = line.leftColor
+			local lineGrey = not isSecret(color) and type(color) == "table"
+				and isGrey(color.r, color.g, color.b)
 			for row in text:gmatch("[^\n]+") do
 				local name = NR.Plain(row)
-				if name ~= "" then names[#names + 1] = name end
+				if name ~= "" then
+					names[#names + 1] = name
+					heights[#names] = heightOf(row, lineGrey)
+				end
 			end
 		end
 	end
-	return names
+	return names, nil, heights
 end

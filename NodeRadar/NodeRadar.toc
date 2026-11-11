@@ -2,7 +2,7 @@
 ## Title: NodeRadar
 ## Notes: Shows the herb and ore nodes on your minimap on a radar around your character. Needs Find Herbs or Find Minerals; GatherMate2 recommended. The minimap blinks briefly while a node is read.
 ## Author: ThPi
-## Version: 3.1.0
+## Version: 3.2.0
 ## SavedVariables: NodeRadarDB
 ## OptionalDeps: GatherMate2
 ## X-Category: Map
